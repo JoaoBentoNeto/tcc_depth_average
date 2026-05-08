@@ -1,6 +1,7 @@
 import os  # noqa: D100
 import posixpath
 import textwrap
+from datetime import datetime
 from typing import Literal
 
 import numpy as np
@@ -10,6 +11,7 @@ def create_simulation_directory(
     simulation_name: str,
     remote_parent_path: str,
     local_parent_path: str,
+    simulation_type: Literal["full", "grey", "laleian2015"],
 ) -> tuple[str, str]:
     """Creates a local directory and generates local and remote paths.
 
@@ -17,15 +19,35 @@ def create_simulation_directory(
         simulation_name: The base name of the directory to be created.
         remote_parent_path: The parent path on the Linux cluster.
         local_parent_path: The local parent directory.
-
+        simulation_type: Defines the routine and environment to be used.
+            Must be exactly "full", "grey", or "laleian2015".
 
     Returns:
         A tuple containing two strings:
         - local_path: The absolute path to the created directory.
         - remote_path: The corresponding path formatted for Linux.
     """
-    local_path = os.path.join(local_parent_path, simulation_name)
-    remote_path = posixpath.join(remote_parent_path, simulation_name)
+    if simulation_type == "full":
+        local_path = os.path.join(
+            local_parent_path, "fullscale", simulation_name
+        )
+        remote_path = posixpath.join(
+            remote_parent_path, "fullscale", simulation_name
+        )
+    if simulation_type == "grey":
+        local_path = os.path.join(
+            local_parent_path, "greyscale", simulation_name
+        )
+        remote_path = posixpath.join(
+            remote_parent_path, "greyscale", simulation_name
+        )
+    if simulation_type == "laleian2015":
+        local_path = os.path.join(
+            local_parent_path, "laleian2015", simulation_name
+        )
+        remote_path = posixpath.join(
+            remote_parent_path, "laleian2015", simulation_name
+        )
 
     os.makedirs(local_path, exist_ok=True)
 
@@ -91,7 +113,7 @@ def create_slurm_script(
     simulation_name: str,
     domain: tuple[int, int, int],
     gpu_type: Literal["k40m", "a100", None],
-    simulation_type: Literal["full", "grey", "autoral"],
+    simulation_type: Literal["full", "grey", "laleian2015"],
     only_one_domain: bool = False,
 ) -> None:
     """Generates a SLURM batch script.
@@ -103,7 +125,7 @@ def create_slurm_script(
         gpu_type: The identifier for the GPU architecture.
             Must be exactly "k40m", "a100" or None (python case).
         simulation_type: Defines the routine and environment to be used.
-            Must be exactly "full", "grey", or "autoral".
+            Must be exactly "full", "grey", or "laleian2015".
         only_one_domain: If True, restricts the subdomains division to a single
             domain.
 
@@ -112,7 +134,7 @@ def create_slurm_script(
     """
     script_path = os.path.join(output_path, f"{simulation_name}.sh")
 
-    if simulation_type == "autoral":
+    if simulation_type == "laleian2015":
         content = textwrap.dedent(f"""\
             #!/bin/bash
             #SBATCH --job-name={simulation_name}
@@ -126,7 +148,7 @@ def create_slurm_script(
 
             module load conda
             conda activate depth_averaged
-            python -u /home/joao.neto/TCC/lbm_run.py ./{simulation_name}.db
+            python -u /home/joao.neto/TCC/laleian2015_run.py ./{simulation_name}.db
             """)
     else:
         n_procs, _ = divide_domain(domain, only_one_domain)
@@ -306,6 +328,7 @@ def fullscale_db(
         None. The script appends the configuration directly to the file system.
     """  # noqa: D205
     content = textwrap.dedent(f"""\
+        
         MRT {{
             tau = {tau}
             F = 0.0, 0.0, {body_force}
@@ -317,7 +340,7 @@ def fullscale_db(
         file.write(content)
 
 
-def autoral_db(
+def laleian2015_db(
     local_path: str,
     remote_path: str,
     simulation_name: str,
@@ -351,38 +374,76 @@ def autoral_db(
     simulation_path = remote_path if on_cluster else local_path
 
     content = textwrap.dedent(f"""\
-        LBM Depth-averaged Autoral {{
+        LBM Depth-averaged Laleian 2015 {{
             tau = {tau}
             F = {body_force}, 0.0
-            timestepMax = {timestepmax}
+            timestepmax = {timestepmax}
             tolerance = {tolerance}
-            local = "{simulation_path}"
-            nome = "{simulation_name}"
-            resolucao = {resolution}
-            dimensions = {domain[1]}, {domain[0]}
+            simulation_path = "{simulation_path}"
+            simulation_name = "{simulation_name}"
+            resolution = {resolution}
+            domain = {domain[0]}, {domain[1]}
         }}""")
 
     with open(os.path.join(local_path, f"{simulation_name}.db"), "w") as file:
         file.write(content)
 
 
+def write_sbatch_header(local_parent_path: str) -> None:
+    """Writes a timestamped header to organize all sbatch master files.
+
+    Creates the parent directory if it does not exist, then appends a
+    timestamped visual separator to the master files for fullscale,
+    greyscale, and laleian2015 simulations.
+
+    Args:
+        local_parent_path: The local directory where the .txt files are saved.
+
+    Returns:
+        None. The headers are written directly to the file system.
+    """
+    # Garante que a pasta pai exista ANTES de tentar criar os arquivos .txt
+    os.makedirs(local_parent_path, exist_ok=True)
+
+    mapping = {
+        "full": "sbatches_fullscale.txt",
+        "grey": "sbatches_greyscale.txt",
+        "laleian2015": "sbatches_laleian2015.txt",
+    }
+
+    for simulation_type in ["full", "grey", "laleian2015"]:
+        filename = mapping.get(simulation_type)
+        txt_path = os.path.join(local_parent_path, filename)
+
+        now = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+        header = textwrap.dedent(f"""\
+            
+            
+            =========================================
+            Data: {now}
+            -----------------------------------------
+
+            """)
+
+        with open(txt_path, "a") as file:
+            file.write(header)
+
+
 def append_sbatch_command(
     local_parent_path: str,
     remote_simulation_path: str,
     simulation_name: str,
-    simulation_type: Literal["full", "grey", "autoral"],
+    simulation_type: Literal["full", "grey", "laleian2015"],
 ) -> None:
     """Appends the submission command to a type-specific sbatches text file.
-
-    If the master file (e.g., 'sbatches_greyscale.txt') does not exist in
-    the local parent path, it will be automatically created.
 
     Args:
         local_parent_path: The local directory where the .txt will be saved.
         remote_simulation_path: The path of the simulation on the cluster.
         simulation_name: The name of the simulation job.
         simulation_type: Defines the target master file. Must be exactly
-            "full", "grey", or "autoral".
+            "full", "grey", or "laleian2015".
 
     Raises:
         ValueError: If an invalid simulation_type is provided.
@@ -394,8 +455,8 @@ def append_sbatch_command(
         txt_filename = "sbatches_fullscale.txt"
     elif simulation_type == "grey":
         txt_filename = "sbatches_greyscale.txt"
-    elif simulation_type == "autoral":
-        txt_filename = "sbatches_autoral.txt"
+    elif simulation_type == "laleian2015":
+        txt_filename = "sbatches_laleian2015.txt"
     else:
         raise ValueError(f"Invalid simulation_type: {simulation_type}")
 
@@ -447,6 +508,7 @@ def greyscale_workspace(
         simulation_name=simulation_name,
         remote_parent_path=remote_path,
         local_parent_path=local_path,
+        simulation_type="grey",
     )
 
     depth_map = np.round(depth_map / resolution) * resolution
@@ -561,6 +623,7 @@ def fullscale_workspace(
         simulation_name=simulation_name,
         remote_parent_path=remote_path,
         local_parent_path=local_path,
+        simulation_type="full",
     )
 
     depth_voxels = np.round(depth_map / resolution).astype(int)
@@ -616,7 +679,7 @@ def fullscale_workspace(
     )
 
 
-def autoral_workspace(
+def laleian2015_workspace(
     tau: float,
     body_force: float,
     depth_map: np.ndarray,
@@ -647,6 +710,7 @@ def autoral_workspace(
         simulation_name=simulation_name,
         remote_parent_path=remote_path,
         local_parent_path=local_path,
+        simulation_type="laleian2015",
     )
 
     depth_map = np.round(depth_map / resolution) * resolution
@@ -654,9 +718,9 @@ def autoral_workspace(
     domain = depth_map.shape
 
     raw_file_path = os.path.join(local_sim_path, f"{simulation_name}.raw")
-    depth_map.astype(np.uint8).tofile(raw_file_path)
+    depth_map.astype(float).tofile(raw_file_path)
 
-    autoral_db(
+    laleian2015_db(
         local_path=local_sim_path,
         remote_path=remote_sim_path,
         simulation_name=simulation_name,
@@ -674,7 +738,7 @@ def autoral_workspace(
         simulation_name=simulation_name,
         domain=domain,
         gpu_type=None,
-        simulation_type="autoral",
+        simulation_type="laleian2015",
         only_one_domain=True,
     )
 
@@ -682,14 +746,21 @@ def autoral_workspace(
         local_parent_path=local_path,
         remote_simulation_path=remote_sim_path,
         simulation_name=simulation_name,
-        simulation_type="autoral",
+        simulation_type="laleian2015",
     )
 
-# 1. Adiciona as mudanças recentes na área de preparo
-git add workspace_generator.py
 
-# 2. Faz o commit com título e corpo detalhado
-git commit -m "feat: finalized workspace generator" -m "Implement functions for orchestrating greyscale, fullscale, and autoral depth-averaged LBM simulation workspaces. Standardize parameter naming conventions across all modules."
+def format_identifier(value: float, symbol: str = "") -> str:
+    """Formats a numeric value into a string identifier for filenames.
 
-# 3. Envia o código para o repositório no GitHub
-git push
+    Args:
+        value: The numeric value to be formatted.
+        symbol: An optional string symbol to insert after the underscore.
+
+    Returns:
+        The formatted string identifier.
+    """
+    if value.is_integer():
+        return f"_{symbol}_{int(value)}"
+
+    return f"_{symbol}_{str(value).replace('.', 'p')}"
