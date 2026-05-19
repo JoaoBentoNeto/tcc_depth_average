@@ -4,9 +4,9 @@ import geometries as geo
 import workspace_generator as wg
 
 if __name__ == "__main__":
-    gpu_type = "k40m"
+    hardware_type = "cpu"
 
-    simulation_name = "duct"
+    simulation_name = "parallel_plates"
 
     # win local: r"Z:\TCC"
     # linux local: "/home/bento/remote/hal"
@@ -14,8 +14,8 @@ if __name__ == "__main__":
     remote_path = f"/home/joao.neto/TCC/{simulation_name}"
     wg.write_sbatch_header(local_parent_path=local_path)
 
-    depth = 100
     lattice_length = 4
+    lattice_width = 32
     resolution = 1.0
 
     tau = 0.9330127
@@ -24,30 +24,22 @@ if __name__ == "__main__":
     timestepmax = 1000000
     tolerance = 1e-12
 
-    aspect_ratios = [
-        0.01,
-        0.1,
-        0.2,
-        0.5,
-        0.75,
-        1.0,
-        1.25,
-        1.5,
-        2,
-        3,
-        5,
-        7.5,
+    depths = [
         10,
         20,
+        50,
+        75,
+        100,
     ]
 
-    for aspect_ratio in aspect_ratios:
-        identifier = wg.format_identifier(value=aspect_ratio, symbol="AR")
-        depth_map = geo.create_duct_2d(
-            aspect_ratio=aspect_ratio,
-            height=depth,
-            resolution=resolution,
-            lattice_length=lattice_length,
+    for depth in depths:
+        identifier = wg.format_identifier(value=depth, symbol="h")
+        depth_map = (
+            geo.create_parallel_plates(
+                lattice_width=lattice_width,
+                lattice_length=lattice_length,
+            )
+            * depth
         )
 
         wg.laleian2015_workspace(
@@ -70,7 +62,21 @@ if __name__ == "__main__":
             remote_path=remote_path,
             simulation_name=simulation_name + f"_full{identifier}",
             resolution=resolution,
-            gpu_type=gpu_type,
+            hardware_type=hardware_type,
+            timestepmax=timestepmax,
+            tolerance=tolerance,
+            only_one_domain=False,
+        )
+
+        wg.bidimensional_workspace(
+            tau=tau,
+            body_force=body_force,
+            depth_map=depth_map,
+            local_path=local_path,
+            remote_path=remote_path,
+            simulation_name=simulation_name + f"_2d{identifier}",
+            resolution=resolution,
+            hardware_type=hardware_type,
             timestepmax=timestepmax,
             tolerance=tolerance,
             only_one_domain=False,
@@ -84,7 +90,7 @@ if __name__ == "__main__":
             remote_path=remote_path,
             simulation_name=simulation_name + f"_grey{identifier}",
             resolution=resolution,
-            gpu_type=gpu_type,
+            hardware_type=hardware_type,
             timestepmax=timestepmax,
             tolerance=tolerance,
             only_one_domain=False,
