@@ -6,10 +6,14 @@ from datetime import timedelta
 import numpy as np
 import pyvista as pv
 
+import cases.rectangular_duct_analytical_equations as analytical
+
 
 def read_db(
     db_path: str,
-) -> tuple[list[int], float, float, str, str, float, int, list[float]]:
+) -> tuple[
+    list[int], float, float, str | None, str | None, float, int, list[float]
+]:
     """Reads and parses the simulation database configuration file.
 
     Args:
@@ -20,8 +24,8 @@ def read_db(
         - domain: A list of integers representing the dimensions.
         - resolution: The conversion factor in micrometers/voxel.
         - tau: The relaxation time.
-        - simulation_path: The directory path for the simulation.
-        - simulation_name: The name of the simulation job.
+        - simulation_path: The directory path (None if not found).
+        - simulation_name: The name of the simulation job (None if not found).
         - tolerance: The convergence tolerance parameter.
         - timestepmax: The maximum number of timesteps.
         - body_force: A list of floats representing the acceleration field.
@@ -42,10 +46,12 @@ def read_db(
     body_force = [float(v.strip()) for v in parsed_data["F"].split(",")]
     timestepmax = int(parsed_data["timestepMax"])
     tolerance = float(parsed_data["tolerance"])
-    simulation_path = parsed_data["local"]
-    simulation_name = parsed_data["nome"]
-    resolution = float(parsed_data["resolucao"])
-    domain = [int(v.strip()) for v in parsed_data["dimensions"].split(",")]
+
+    simulation_path = parsed_data.get("simulation_path", None)
+    simulation_name = parsed_data.get("simulation_name", None)
+
+    resolution = float(parsed_data["voxel_length"])
+    domain = [int(v.strip()) for v in parsed_data["N"].split(",")]
 
     return (
         domain,
@@ -275,12 +281,34 @@ def run_lbm(db_path: str) -> None:
         f"{abs_perm / um_to_md:.4f} mD"
     )
 
+    expected_3d = (
+        analytical.calculate_permeability_3d(
+            width=domain[1] - 2, height=max_depth
+        )
+        * resolution**2
+    )
+    print(
+        f"\n\nExpected 3D Permeability = "
+        f"{expected_3d:.4f} \u03bcm^2 = "
+        f"{expected_3d / um_to_md:.4f} mD"
+    )
+    expected_2p5d = (
+        analytical.calculate_permeability_2p5d(
+            width=domain[1] - 2, height=max_depth
+        )
+        * resolution**2
+    )
+    print(
+        f"\n\nExpected 2.5D Permeability = "
+        f"{expected_2p5d:.4f} \u03bcm^2 = "
+        f"{expected_2p5d / um_to_md:.4f} mD"
+    )
     export_vti(
         ux=u_x,
         uy=u_y,
         rho=rho_2d,
         resolution=resolution,
-        timestep=timestep,
+        final_timestep=timestep,
         simulation_path=simulation_path,
     )
 
