@@ -1,14 +1,16 @@
 import os
-
-import numpy as np
-
-import cases.rectangular_duct_analytical_equations as analytical
-import results_analysis as ra
-import workspace_generator as wg
-
-
+import sys
 from typing import Literal, Sequence
+
 import numpy as np
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+import results_analysis as analysis
+import Simulation_Cases.analytical_equations as analytical
+import workspace_generator as generate
 
 
 def generate_aspect_ratios(
@@ -41,9 +43,7 @@ def generate_aspect_ratios(
         ValueError: If 'scale' is 'log' and any of the points are less than
             or equal to zero.
     """
-    fixed_points = sorted(
-        set([lower_bound] + list(aspect_ratios) + [upper_bound])
-    )
+    fixed_points = sorted(set([lower_bound] + list(aspect_ratios) + [upper_bound]))
     generated_points = []
 
     for i in range(len(fixed_points) - 1):
@@ -52,9 +52,7 @@ def generate_aspect_ratios(
 
         if scale == "log":
             if a <= 0 or b <= 0:
-                raise ValueError(
-                    "For a 'log' scale, all points must be strictly positive."
-                )
+                raise ValueError("For a 'log' scale, all points must be strictly positive.")
             interp = np.logspace(np.log10(a), np.log10(b), num_points + 2)
         else:
             interp = np.linspace(a, b, num_points + 2)
@@ -69,10 +67,10 @@ def generate_aspect_ratios(
 if __name__ == "__main__":
     simulation_name = "duct"
 
-    # win local: r"Z:\TCC"
+    # win local: r"Z:\TCC\Part_1-literature_validation"
     # linux local: "/home/bento/remote/hal"
-    local_path = os.path.join("/home/bento/remote/hal", "TCC", simulation_name)
-    remote_path = f"/home/joao.neto/TCC/{simulation_name}"
+    local_path = os.path.join("/home/bento/remote/hal", "TCC", "Part_1-literature_validation", simulation_name)
+    remote_path = f"/home/joao.neto/TCC/Part_1-literature_validation/{simulation_name}"
 
     depth = 100
     lattice_length = 4
@@ -80,9 +78,6 @@ if __name__ == "__main__":
 
     tau = 0.9330127
     body_force = 1e-8
-
-    timestepmax = 1000000
-    tolerance = 1e-12
 
     aspect_ratios = [
         0.01,
@@ -98,32 +93,26 @@ if __name__ == "__main__":
         5,
         7.5,
         10,
-        20,
     ]
     # aspect_ratios = [1.0]
+
+    simulation_data = analysis.extract_simulation_data(parent_folder_path=local_path)
 
     analytical_data = {"3d": {}, "2p5d": {}}
 
     for aspect_ratio in aspect_ratios:
-        identifier = wg.format_identifier(value=aspect_ratio, symbol="AR")
+        identifier = generate.format_identifier(value=aspect_ratio, symbol="AR")
         width = round((depth / resolution) / aspect_ratio) * resolution
 
-        x_phys = np.linspace(
-            resolution / 2, width - resolution / 2, int(width / resolution)
-        )
-        y_phys = np.linspace(
-            resolution / 2,
-            lattice_length * resolution - resolution / 2,
-            lattice_length,
-        )
-        xx, yy = np.meshgrid(x_phys, y_phys, indexing="ij")
+        x_phys = np.linspace(-width / 2 + resolution / 2, width / 2 - resolution / 2, int(width / resolution))
+        # print(f"x phys shape 1 {x_phys.shape}")
 
-        k_3d = analytical.calculate_permeability_3d(width=width, height=depth)
-        k_2p5d = analytical.calculate_permeability_2p5d(
-            width=width, height=depth
+        k_3d = analytical.calculate_permeability_3d_rectangular_duct(width=width, height=depth) * width / (width + 2)
+        k_2p5d = (
+            analytical.calculate_permeability_2p5d_rectangular_duct(width=width, height=depth) * width / (width + 2)
         )
 
-        u_3d = analytical.calculate_analytical_velocity_map_3d(
+        u_3d = analytical.calculate_analytical_velocity_map_3d_rectangular_duct(
             x_coords=x_phys,
             height=depth,
             width=width,
@@ -132,7 +121,8 @@ if __name__ == "__main__":
             length_nodes=lattice_length,
             flow_axis=1,
         )
-        u_2p5d = analytical.calculate_analytical_velocity_map_2p5d(
+        # print(f"x phys shape 2 {x_phys.shape}")
+        u_2p5d = analytical.calculate_analytical_velocity_map_2p5d_rectangular_duct(
             x_coords=x_phys,
             height=depth,
             width=width,
@@ -141,18 +131,31 @@ if __name__ == "__main__":
             length_nodes=lattice_length,
             flow_axis=1,
         )
+        # print(f"u_2p5d (ar = {aspect_ratio}) = {u_2p5d.shape}")
 
         analytical_data["3d"][identifier] = {
             "permeability": k_3d,
             "velocity": u_3d,
-            "coords": (xx, yy),
         }
 
         analytical_data["2p5d"][identifier] = {
             "permeability": k_2p5d,
             "velocity": u_2p5d,
-            "coords": (xx, yy),
         }
+
+    errors_data = analysis.compute_errors(
+        simulation_data=simulation_data,
+        analytical_data=analytical_data,
+        experimental_data=None,
+    )
+
+    analysis.export_comparative_results_txt(
+        results=errors_data,
+        analytical_data=analytical_data,
+        experimental_data=None,
+        simulation_name=simulation_name,
+        output_path=os.path.join(local_path, f"{simulation_name}_comparative_results.txt"),
+    )
 
     expected_x = []
     expected_y = []
@@ -168,39 +171,23 @@ if __name__ == "__main__":
 
     for aspect_ratio in razao_aspecto:
         width = depth / aspect_ratio
-        k_3d = analytical.calculate_permeability_3d(width=width, height=depth)
-        k_2p5d = analytical.calculate_permeability_2p5d(
-            width=width, height=depth
+        k_3d = analytical.calculate_permeability_3d_rectangular_duct(width=width, height=depth) * width / (width + 2)
+        k_2p5d = (
+            analytical.calculate_permeability_2p5d_rectangular_duct(width=width, height=depth) * width / (width + 2)
         )
         expected_x.append(aspect_ratio)
         expected_y.append(
-            ra.calculate_permeability_errors(
+            analysis.calculate_permeability_errors(
                 test_permeability=k_2p5d,
                 ref_permeability=k_3d,
             )
         )
 
-    simulation_data = ra.extract_simulation_data(parent_folder_path=local_path)
-
-    errors_data = ra.compute_errors(
-        simulation_data=simulation_data,
-        analytical_data=analytical_data,
-        experimental_data=None,
-    )
-
-    ra.plot_permeability_errors(
+    analysis.plot_permeability_errors(
         parent_folder_path=local_path,
         simulation_name=simulation_name,
         results=errors_data,
         x_label="Razão de Aspecto (AR = h/b)",
         x_scale="log",
         expected_error=(expected_x, expected_y),
-    )
-
-    ra.export_comparative_results_txt(
-        results=errors_data,
-        analytical_data=analytical_data,
-        experimental_data=None,
-        simulation_name=simulation_name,
-        output_path=local_path,
     )

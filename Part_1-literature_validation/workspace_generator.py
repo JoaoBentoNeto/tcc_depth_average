@@ -28,29 +28,17 @@ def create_simulation_directory(
         - remote_path: The corresponding path formatted for Linux.
     """
     if simulation_type == "full":
-        local_path = os.path.join(
-            local_parent_path, "fullscale", simulation_name
-        )
-        remote_path = posixpath.join(
-            remote_parent_path, "fullscale", simulation_name
-        )
+        local_path = os.path.join(local_parent_path, "fullscale", simulation_name)
+        remote_path = posixpath.join(remote_parent_path, "fullscale", simulation_name)
     if simulation_type == "2D":
         local_path = os.path.join(local_parent_path, "2d", simulation_name)
         remote_path = posixpath.join(remote_parent_path, "2d", simulation_name)
     if simulation_type == "grey":
-        local_path = os.path.join(
-            local_parent_path, "greyscale", simulation_name
-        )
-        remote_path = posixpath.join(
-            remote_parent_path, "greyscale", simulation_name
-        )
+        local_path = os.path.join(local_parent_path, "greyscale", simulation_name)
+        remote_path = posixpath.join(remote_parent_path, "greyscale", simulation_name)
     if simulation_type == "laleian2015":
-        local_path = os.path.join(
-            local_parent_path, "laleian2015", simulation_name
-        )
-        remote_path = posixpath.join(
-            remote_parent_path, "laleian2015", simulation_name
-        )
+        local_path = os.path.join(local_parent_path, "laleian2015", simulation_name)
+        remote_path = posixpath.join(remote_parent_path, "laleian2015", simulation_name)
 
     os.makedirs(local_path, exist_ok=True)
 
@@ -94,11 +82,7 @@ def divide_domain(
                 n_procs_z = num_procs // (n_procs_x * n_procs_y)
 
                 if n_procs_x * n_procs_y * n_procs_z == num_procs:
-                    if (
-                        nx % n_procs_x == 0
-                        and ny % n_procs_y == 0
-                        and nz % n_procs_z == 0
-                    ):
+                    if nx % n_procs_x == 0 and ny % n_procs_y == 0 and nz % n_procs_z == 0:
                         subdomain_x = nx // n_procs_x
                         subdomain_y = ny // n_procs_y
                         subdomain_z = nz // n_procs_z
@@ -160,10 +144,8 @@ def create_slurm_script(
             #SBATCH --cpus-per-task=16
 
             module load conda
-            # conda remove --name depth_averaged --all -y
-            # conda create -n depth_averaged -c conda-forge python numpy scipy simpy matplotlib scikit-image porespy pyvista pyevtk jupyterlab ipykernel ipywidgets trame pypardiso scikit-fmm -y
             conda activate depth_averaged
-            python -u /home/joao.neto/TCC/laleian2015_run.py ./{simulation_name}.db
+            python -u /home/joao.neto/TCC/Part_1-literature_validation/run_laleian2015.py ./{simulation_name}.db
             """)
     else:
         n_procs, _ = divide_domain(
@@ -180,7 +162,7 @@ def create_slurm_script(
         elif simulation_type == "grey":
             routine = "lbpm_greyscale_simulator"
             module = "lbpm/cpu" if hardware_type == "cpu" else "lbpm/gpu"
-            module = module + f"/poro_grey_fix_2edb227"
+            module = module + "/poro_grey_fix_2edb227"
 
         else:
             raise ValueError(f"Invalid simulation_type: {simulation_type}")
@@ -484,11 +466,7 @@ def append_sbatch_command(
     txt_path = os.path.join(local_parent_path, txt_filename)
     all_path = os.path.join(local_parent_path, "sbatches_all.txt")
 
-    command = (
-        f"cd {remote_simulation_path} && "
-        f"dos2unix {simulation_name}.sh && "
-        f"sbatch {simulation_name}.sh\n"
-    )
+    command = f"cd {remote_simulation_path} && dos2unix {simulation_name}.sh && sbatch {simulation_name}.sh\n"
 
     with open(txt_path, "a") as file:
         file.write(command)
@@ -542,19 +520,13 @@ def greyscale_workspace(
 
     porosity_map = depth_map / max_depth
     porosity_map = np.where(porosity_map == 1, 0.99999, porosity_map)
-    porosity_map.astype(np.float64).tofile(
-        os.path.join(local_sim_path, f"porosity_map_{simulation_name}.raw")
-    )
+    porosity_map.astype(np.float64).tofile(os.path.join(local_sim_path, f"porosity_map_{simulation_name}.raw"))
 
     permeability_map = porosity_map * depth_map**2 / 12.0
-    permeability_map.astype(np.float64).tofile(
-        os.path.join(local_sim_path, f"permeability_map_{simulation_name}.raw")
-    )
+    permeability_map.astype(np.float64).tofile(os.path.join(local_sim_path, f"permeability_map_{simulation_name}.raw"))
 
     depth_map = np.where(depth_map == 0, 0, 1)
-    depth_map.astype(np.uint8).tofile(
-        os.path.join(local_sim_path, f"{simulation_name}.raw")
-    )
+    depth_map.astype(np.uint8).tofile(os.path.join(local_sim_path, f"{simulation_name}.raw"))
 
     common_db(
         output_path=local_sim_path,

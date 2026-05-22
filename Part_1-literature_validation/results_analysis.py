@@ -2,13 +2,17 @@ import glob
 import os
 import re
 import traceback
+import warnings
 from datetime import datetime
 from typing import Literal
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pyvista as pv
-from scipy.interpolate import griddata
+
+import os
+import re
+from datetime import datetime
 
 import run_laleian2015
 
@@ -36,9 +40,7 @@ def read_vti(
     vis_folders = glob.glob(vis_pattern)
 
     if not vis_folders:
-        raise FileNotFoundError(
-            f"No 'vis*' directory found in {simulation_path}."
-        )
+        raise FileNotFoundError(f"No 'vis*' directory found in {simulation_path}.")
 
     # Sorts the list and selects the last folder (latest timestep)
     vis_folders.sort()
@@ -117,12 +119,7 @@ def calculate_permeability(
     """
     kinematic_viscosity = (tau - 0.5) / 3.0
 
-    abs_perm = (
-        (resolution**2)
-        * np.mean(streamwise_velocity)
-        * kinematic_viscosity
-        / body_force
-    )
+    abs_perm = (resolution**2) * np.mean(streamwise_velocity) * kinematic_viscosity / body_force
 
     return float(abs_perm)
 
@@ -130,54 +127,33 @@ def calculate_permeability(
 def calculate_velocity_errors(
     test_velocity: np.ndarray | None,
     ref_velocity: np.ndarray | None,
-    test_coords: tuple[np.ndarray, np.ndarray] | None = None,
-    ref_coords: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> tuple[float, float, np.ndarray]:
-    """Computes velocity errors between test and reference data.
+    """Computes velocity errors between test and reference data directly.
 
-    If coordinate grids are provided and differ, the reference velocity is
-    interpolated onto the test coordinates. Calculates the normalized RMSE
-    according to Equation 15 from Laleian et al. (2015).
+    Calculates the normalized RMSE according to Equation 15 from Laleian et al. (2015).
 
     Args:
-        test_velocity: 2D NumPy array of the test velocity field, or None
-            if is a experimental result without velocity field.
-        ref_velocity: 2D NumPy array of the reference velocity field, or None
-            if is a experimental result without velocity field.
-        test_coords: A tuple of 2D arrays (X, Y) for the test physical coordinates.
-        ref_coords: A tuple of 2D arrays (X, Y) for the reference physical coordinates.
+        test_velocity: 2D/3D NumPy array of the test velocity field, or None.
+        ref_velocity: 2D/3D NumPy array of the reference velocity field, or None.
 
     Returns:
         A tuple containing:
         - normalized_rmse: The normalized root-mean-square error of the velocity.
         - mean_velocity_error: The mean local absolute percentage error.
-        - velocity_error_map: 2D array of the local absolute percentage error.
+        - velocity_error_map: Array of the local absolute percentage error.
     """
     if ref_velocity is None:
-        return float("nan"), float("nan"), np.full_like(test_velocity, np.nan)
+        dummy_map = np.full_like(test_velocity, np.nan) if test_velocity is not None else np.array([])
+        return float("nan"), float("nan"), dummy_map
     elif test_velocity is None:
         return float("nan"), float("nan"), np.full_like(ref_velocity, np.nan)
 
-    if test_coords is not None and ref_coords is not None:
-        shapes_differ = test_velocity.shape != ref_velocity.shape
-        coords_differ = not (
-            np.array_equal(test_coords[0], ref_coords[0])
-            and np.array_equal(test_coords[1], ref_coords[1])
+    if test_velocity.shape != ref_velocity.shape:
+        warnings.warn(
+            f"Domain dimensions are not the same: test {test_velocity.shape} vs ref {ref_velocity.shape}. "
+            "defining errors as NaN."
         )
-
-        if shapes_differ or coords_differ:
-            points = np.column_stack(
-                (ref_coords[0].ravel(), ref_coords[1].ravel())
-            )
-            values = ref_velocity.ravel()
-
-            ref_velocity = griddata(
-                points=points,
-                values=values,
-                xi=(test_coords[0], test_coords[1]),
-                method="linear",
-                fill_value=0.0,
-            )
+        return float("nan"), float("nan"), np.full_like(test_velocity, np.nan)
 
     fluid_mask = np.abs(ref_velocity) > 1e-14
     velocity_error_map = np.zeros_like(test_velocity)
@@ -185,16 +161,12 @@ def calculate_velocity_errors(
 
     if n_liquid_nodes > 0:
         velocity_error_map[fluid_mask] = (
-            np.abs(ref_velocity[fluid_mask] - test_velocity[fluid_mask])
-            / np.abs(ref_velocity[fluid_mask])
-            * 100.0
+            np.abs(ref_velocity[fluid_mask] - test_velocity[fluid_mask]) / np.abs(ref_velocity[fluid_mask]) * 100.0
         )
 
         mean_velocity_error = float(np.mean(velocity_error_map[fluid_mask]))
 
-        rmse = np.sqrt(
-            np.sum((test_velocity - ref_velocity) ** 2) / n_liquid_nodes
-        )
+        rmse = np.sqrt(np.sum((test_velocity - ref_velocity) ** 2) / n_liquid_nodes)
 
         abs_ref = np.abs(ref_velocity[fluid_mask])
         velocity_range = np.max(abs_ref) - np.min(abs_ref)
@@ -203,6 +175,7 @@ def calculate_velocity_errors(
     else:
         mean_velocity_error = float("nan")
         normalized_rmse = float("nan")
+
     return normalized_rmse, mean_velocity_error, velocity_error_map
 
 
@@ -220,9 +193,7 @@ def calculate_permeability_errors(
     Returns:
         The absolute percentage error in permeability.
     """
-    permeability_error = (
-        abs(test_permeability - ref_permeability) / ref_permeability * 100.0
-    )
+    permeability_error = abs(test_permeability - ref_permeability) / ref_permeability * 100.0
 
     return permeability_error
 
@@ -240,7 +211,7 @@ def extract_simulation_data(parent_folder_path: str) -> dict:
         A nested dictionary containing the results organized by
         simulation type and identifier.
     """
-    valid_cases = ["fullscale", "greyscale", "2D", "laleian2015"]
+    valid_cases = ["fullscale", "greyscale", "2d", "laleian2015"]
     simulation_data = {case: {} for case in valid_cases}
 
     for case in valid_cases:
@@ -248,11 +219,7 @@ def extract_simulation_data(parent_folder_path: str) -> dict:
         if not os.path.isdir(case_path):
             continue
 
-        sim_folders = [
-            f
-            for f in os.listdir(case_path)
-            if os.path.isdir(os.path.join(case_path, f))
-        ]
+        sim_folders = [f for f in os.listdir(case_path) if os.path.isdir(os.path.join(case_path, f))]
 
         for sim_folder in sim_folders:
             sim_path = os.path.join(case_path, sim_folder)
@@ -262,15 +229,11 @@ def extract_simulation_data(parent_folder_path: str) -> dict:
 
             db_path = os.path.join(sim_path, f"{sim_folder}.db")
             if not os.path.exists(db_path):
-                print(
-                    f"Warning: .db file not found for {sim_folder}. Skipping..."
-                )
+                print(f"Warning: .db file not found for {sim_folder}. Skipping...")
                 continue
 
             try:
-                (_, resolution, tau, _, _, _, _, body_force) = (
-                    run_laleian2015.read_db(db_path)
-                )
+                (_, resolution, tau, _, _, _, _, body_force) = run_laleian2015.read_db(db_path)
 
                 vz_map, _, _ = get_depth_averaged_map(sim_path)
             except Exception as e:
@@ -288,17 +251,9 @@ def extract_simulation_data(parent_folder_path: str) -> dict:
                 resolution=resolution,
             )
 
-            nx, ny = flow_velocity.shape
-            x_test, y_test = np.meshgrid(
-                np.arange(nx) * resolution,
-                np.arange(ny) * resolution,
-                indexing="ij",
-            )
-
             simulation_data[case][identifier] = {
                 "permeability": sim_permeability,
                 "velocity": flow_velocity,
-                "coords": (x_test, y_test),
             }
 
     return simulation_data
@@ -309,60 +264,67 @@ def compute_errors(
     analytical_data: dict[str, dict[str, dict]] | None = None,
     experimental_data: dict[str, float] | None = None,
 ) -> dict:
-    """Computes simulation errors.
+    """Computes simulation errors with priority: Experimental > Analytical 3D > Fullscale.
 
     Args:
         simulation_data: A nested dictionary of extracted simulation data.
         analytical_data: A nested dictionary mapping ["3d" or "2p5d"] ->
-            [identifier] -> dict containing permeability, velocity, and coords.
+            [identifier] -> dict containing permeability and velocity.
         experimental_data: A dict mapping the identifier to k_experimental.
 
     Returns:
-        A nested dictionary containing the computed errors for each simulation.
+        A nested dictionary containing the computed errors for each simulation/analytical case.
     """
-    results = {case: {} for case in simulation_data.keys()}
 
-    for case, runs in simulation_data.items():
+    # 1. Criar dicionários de busca normalizados (removendo o '_' do início das chaves)
+    # Isso garante que "AR_0p01" ache "_AR_0p01" sem problemas.
+    ref_exp = {k.lstrip("_"): v for k, v in experimental_data.items()} if experimental_data else {}
+
+    ref_ana_3d = {}
+    if analytical_data and "3d" in analytical_data:
+        ref_ana_3d = {k.lstrip("_"): v for k, v in analytical_data["3d"].items()}
+
+    ref_fullscale = {}
+    if "fullscale" in simulation_data:
+        ref_fullscale = {k.lstrip("_"): v for k, v in simulation_data["fullscale"].items()}
+
+    # 2. Unificar os casos
+    all_cases = {case: runs for case, runs in simulation_data.items()}
+    if analytical_data:
+        if "3d" in analytical_data:
+            all_cases["analytical_3d"] = analytical_data["3d"]
+        if "2p5d" in analytical_data:
+            all_cases["analytical_2p5d"] = analytical_data["2p5d"]
+
+    results = {case: {} for case in all_cases.keys()}
+
+    for case, runs in all_cases.items():
+        print(f"\ncase: {case}")
         for identifier, data in runs.items():
-            test_perm = data["permeability"]
-            test_vel = data["velocity"]
-            test_coords = data["coords"]
+            test_perm = data.get("permeability")
+            test_vel = data.get("velocity")
 
+            # Limpa o identificador atual apenas para fazer a busca na referência
+            clean_id = identifier.lstrip("_")
+
+            # 3. Definir a melhor referência de permeabilidade usando os lookups limpos
             ref_perm = None
-            if (
-                experimental_data is not None
-                and identifier in experimental_data
-            ):
-                ref_perm = experimental_data[identifier]
-            elif (
-                analytical_data is not None
-                and "3d" in analytical_data
-                and identifier in analytical_data["3d"]
-            ):
-                ref_perm = analytical_data["3d"][identifier]["permeability"]
-            elif case != "fullscale" and identifier in simulation_data.get(
-                "fullscale", {}
-            ):
-                ref_perm = simulation_data["fullscale"][identifier][
-                    "permeability"
-                ]
+            if clean_id in ref_exp:
+                ref_perm = ref_exp[clean_id]
+            elif case != "analytical_3d" and clean_id in ref_ana_3d:
+                ref_perm = ref_ana_3d[clean_id]["permeability"]
+            elif case not in ("analytical_3d", "fullscale") and clean_id in ref_fullscale:
+                ref_perm = ref_fullscale[clean_id]["permeability"]
 
+            # 4. Definir a melhor referência de velocidade usando os lookups limpos
             ref_vel = None
-            ref_coords = None
-            if (
-                analytical_data is not None
-                and "3d" in analytical_data
-                and identifier in analytical_data["3d"]
-            ):
-                ref_vel = analytical_data["3d"][identifier]["velocity"]
-                ref_coords = analytical_data["3d"][identifier]["coords"]
-            elif case != "fullscale" and identifier in simulation_data.get(
-                "fullscale", {}
-            ):
-                ref_vel = simulation_data["fullscale"][identifier]["velocity"]
-                ref_coords = simulation_data["fullscale"][identifier]["coords"]
+            if case != "analytical_3d" and clean_id in ref_ana_3d:
+                ref_vel = ref_ana_3d[clean_id]["velocity"]
+            elif case not in ("analytical_3d", "fullscale") and clean_id in ref_fullscale:
+                ref_vel = ref_fullscale[clean_id]["velocity"]
 
-            if ref_perm is not None:
+            # 5. Calcular erro de permeabilidade
+            if ref_perm is not None and test_perm is not None:
                 perm_error = calculate_permeability_errors(
                     test_permeability=test_perm,
                     ref_permeability=ref_perm,
@@ -370,12 +332,11 @@ def compute_errors(
             else:
                 perm_error = float("nan")
 
-            if ref_vel is not None:
+            # 6. Calcular erro de velocidade
+            if ref_vel is not None and test_vel is not None:
                 rmse, mean_vel_error, _ = calculate_velocity_errors(
                     test_velocity=test_vel,
                     ref_velocity=ref_vel,
-                    test_coords=test_coords,
-                    ref_coords=ref_coords,
                 )
             else:
                 rmse = float("nan")
@@ -387,7 +348,9 @@ def compute_errors(
                 "normalized_rmse": rmse,
                 "mean_velocity_error": mean_vel_error,
             }
+            print(f"{identifier}: permeability={test_perm}, perm_error={perm_error}, rmse={rmse}")
 
+    print("\n")
     return results
 
 
@@ -416,17 +379,18 @@ def plot_permeability_errors(
     fig, ax = plt.subplots(figsize=(8, 6))
 
     styles = {
-        "fullscale": {"color": "#1f77b4", "marker": "o"},
-        "greyscale": {"color": "#ff7f0e", "marker": "s"},
-        "2D": {"color": "#2ca02c", "marker": "^"},
-        "laleian2015": {"color": "#d62728", "marker": "D"},
+        "fullscale": {"color": "#ff7f0e", "marker": "D"},
+        "greyscale": {"color": "#1f77b4", "marker": "s"},
+        "2d": {"color": "#2ca02c", "marker": "^"},
+        "laleian2015": {"color": "#d62728", "marker": "o"},
     }
 
     legend_labels = {
         "fullscale": "Fullscale 3D",
         "greyscale": "Greyscale (2.5D)",
-        "2D": "Standard 2D",
+        "2d": "2D",
         "laleian2015": "Laleian et al. (2015)",
+        "analytical_2p5d": "Analítico 2.5D",
     }
 
     for case, runs in results.items():
@@ -458,11 +422,11 @@ def plot_permeability_errors(
             x_vals,
             y_vals,
             label=label_name,
-            color=style["color"],
+            color="none",
             marker=style["marker"],
             s=60,
-            edgecolors="black",
-            linewidths=0.5,
+            edgecolors=style["color"],
+            linewidths=1.5,
             zorder=3,
         )
 
@@ -473,8 +437,9 @@ def plot_permeability_errors(
             y_exp,
             color="black",
             linestyle="--",
-            linewidth=2.0,
-            label="Erro esperado",
+            linewidth=1.5,
+            alpha=0.7,
+            label="Erro esperado (2.5D vs 3D)",
             zorder=2,
         )
 
@@ -482,9 +447,7 @@ def plot_permeability_errors(
     ax.set_yscale("log")
 
     ax.set_xlabel(x_label, fontsize=12, fontweight="bold")
-    ax.set_ylabel(
-        "Erro relativo da permeabilidade (%)", fontsize=12, fontweight="bold"
-    )
+    ax.set_ylabel("Erro relativo da permeabilidade (%)", fontsize=12, fontweight="bold")
 
     ax.grid(True, which="major", linestyle="-", alpha=0.5)
     ax.grid(True, which="minor", linestyle=":", alpha=0.2)
@@ -494,11 +457,10 @@ def plot_permeability_errors(
     plt.tight_layout()
 
     os.makedirs(parent_folder_path, exist_ok=True)
-    save_path = os.path.join(
-        parent_folder_path, f"{simulation_name}_permeability_error.png"
-    )
+    save_path = os.path.join(parent_folder_path, f"{simulation_name}_permeability_error.png")
     plt.savefig(save_path, dpi=600, bbox_inches="tight", pad_inches=0.1)
-    plt.show()
+    # plt.show()
+    plt.close()
 
 
 def export_comparative_results_txt(
@@ -511,21 +473,28 @@ def export_comparative_results_txt(
     """Exports a wide-format comparative text report of the simulations.
 
     Creates an aligned, fixed-width text table comparing permeabilities (in mD)
-    and errors across all theoretical references and LBM models.
-
-    Args:
-        results: Nested dict containing the computed simulation errors.
-        analytical_data: Nested dict containing 3D and 2.5D theoretical data.
-        experimental_data: Dict containing experimental permeabilities.
-        simulation_name: Name of the simulation for the header.
-        output_path: The full file path to save the .txt report.
+    and errors across all theoretical references and LBM models. Completely
+    omits any columns that contain only NaN values.
     """
     um_to_md = 0.0009869233
-    cases = ["fullscale", "greyscale", "2D", "laleian2015"]
+    cases = ["fullscale", "greyscale", "2d", "laleian2015"]
 
+    # 1. Normalizar todos os dicionários para evitar duplicatas
+    clean_results = {}
+    for case, runs in results.items():
+        clean_results[case] = {k.lstrip("_"): v for k, v in runs.items()}
+
+    clean_ana_3d = {k.lstrip("_"): v for k, v in analytical_data.get("3d", {}).items()} if analytical_data else {}
+    clean_ana_2p5d = {k.lstrip("_"): v for k, v in analytical_data.get("2p5d", {}).items()} if analytical_data else {}
+    clean_exp = {k.lstrip("_"): v for k, v in experimental_data.items()} if experimental_data else {}
+
+    # 2. Coletar e ordenar identificadores únicos
     identifiers = set()
-    for runs in results.values():
+    for runs in clean_results.values():
         identifiers.update(runs.keys())
+    identifiers.update(clean_ana_3d.keys())
+    identifiers.update(clean_ana_2p5d.keys())
+    identifiers.update(clean_exp.keys())
 
     def get_numeric_ar(ident):
         match = re.search(r"(\d+(?:p\d+)?)", ident)
@@ -533,105 +502,89 @@ def export_comparative_results_txt(
 
     sorted_identifiers = sorted(list(identifiers), key=get_numeric_ar)
 
-    current_time = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    divider = "-" * 230 + "\n"
-
-    header = (
-        f"{divider}"
-        f" SIMULAÇÃO: {simulation_name} | DATA: {current_time}\n"
-        f"{divider}"
-    )
-
-    col_width = 18
-    table_header = f"{'Tag':<10} | "
-
-    table_header += f"{'Exp [mD]':<{col_width}} | "
-    table_header += f"{'Ana 3D [mD]':<{col_width}} | "
-    table_header += f"{'Ana 2.5D [mD]':<{col_width}} | "
-    for case in cases:
-        table_header += f"{case.capitalize()} [mD] | ".ljust(col_width + 3)
-
-    for case in cases:
-        table_header += f"Err K {case.capitalize()} [%] | ".ljust(col_width + 3)
-
-    for case in cases:
-        table_header += f"Err V {case.capitalize()} | ".ljust(col_width + 3)
-
-    table_header += "\n" + divider
-
-    lines = []
+    # -------------------------------------------------------------------------
+    # PASSO 1: PRÉ-PROCESSAR OS DADOS (Construir uma matriz de dados brutos)
+    # -------------------------------------------------------------------------
+    raw_rows = []
     for ident in sorted_identifiers:
         match = re.search(r"(\d+(?:p\d+)?)", ident)
         tag = match.group(1) if match else ident
 
-        line_str = f"{tag:<10} | "
+        exp_k = clean_exp.get(ident, float("nan"))
+        ana3d_k = clean_ana_3d.get(ident, {}).get("permeability", float("nan"))
+        ana25d_k = clean_ana_2p5d.get(ident, {}).get("permeability", float("nan"))
 
-        exp_k = (
-            experimental_data.get(ident, float("nan"))
-            if experimental_data
-            else float("nan")
-        )
-        ana3d_k = (
-            analytical_data["3d"][ident]["permeability"]
-            if analytical_data
-            and "3d" in analytical_data
-            and ident in analytical_data["3d"]
-            else float("nan")
-        )
-        ana25d_k = (
-            analytical_data["2p5d"][ident]["permeability"]
-            if analytical_data
-            and "2p5d" in analytical_data
-            and ident in analytical_data["2p5d"]
-            else float("nan")
-        )
-
-        refs = [exp_k, ana3d_k, ana25d_k]
-        for val in refs:
-            val_md = val / um_to_md if val == val else float("nan")
-            line_str += (
-                f"{val_md:<{col_width}.2f} | "
-                if val == val
-                else f"{'NaN':<{col_width}} | "
-            )
+        row_data = {
+            "tag": tag,
+            "Exp [mD]": exp_k / um_to_md if exp_k == exp_k and exp_k is not None else float("nan"),
+            "Ana 3D [mD]": ana3d_k / um_to_md if ana3d_k == ana3d_k and ana3d_k is not None else float("nan"),
+            "Ana 2.5D [mD]": ana25d_k / um_to_md if ana25d_k == ana25d_k and ana25d_k is not None else float("nan"),
+        }
 
         for case in cases:
-            perm = (
-                results.get(case, {})
-                .get(ident, {})
-                .get("permeability", float("nan"))
-            )
-            perm_md = perm / um_to_md if perm == perm else float("nan")
-            line_str += (
-                f"{perm_md:<{col_width}.2f} | "
-                if perm == perm
-                else f"{'NaN':<{col_width}} | "
+            perm = clean_results.get(case, {}).get(ident, {}).get("permeability", float("nan"))
+            row_data[f"{case.capitalize()} [mD]"] = (
+                perm / um_to_md if perm == perm and perm is not None else float("nan")
             )
 
-        for case in cases:
-            err_k = (
-                results.get(case, {})
-                .get(ident, {})
-                .get("permeability_error", float("nan"))
-            )
-            line_str += (
-                f"{err_k:<{col_width}.2f} | "
-                if err_k == err_k
-                else f"{'NaN':<{col_width}} | "
-            )
+            err_k = clean_results.get(case, {}).get(ident, {}).get("permeability_error", float("nan"))
+            row_data[f"Err K {case.capitalize()} [%]"] = err_k if err_k == err_k and err_k is not None else float("nan")
 
-        for case in cases:
-            err_v = (
-                results.get(case, {})
-                .get(ident, {})
-                .get("normalized_rmse", float("nan"))
-            )
-            line_str += (
-                f"{err_v:<{col_width}.6f} | "
-                if err_v == err_v
-                else f"{'NaN':<{col_width}} | "
-            )
+            err_v = clean_results.get(case, {}).get(ident, {}).get("normalized_rmse", float("nan"))
+            row_data[f"Err V {case.capitalize()}"] = err_v if err_v == err_v and err_v is not None else float("nan")
 
+        raw_rows.append(row_data)
+
+    # -------------------------------------------------------------------------
+    # PASSO 2: FILTRAR COLUNAS VAZIAS
+    # -------------------------------------------------------------------------
+    # Define a ordem desejada das colunas
+    all_col_keys = ["Exp [mD]", "Ana 3D [mD]", "Ana 2.5D [mD]"]
+    for case in cases:
+        all_col_keys.append(f"{case.capitalize()} [mD]")
+    for case in cases:
+        all_col_keys.append(f"Err K {case.capitalize()} [%]")
+    for case in cases:
+        all_col_keys.append(f"Err V {case.capitalize()}")
+
+    # Retém apenas as colunas que têm pelo menos um valor que não é NaN
+    valid_cols = []
+    for col in all_col_keys:
+        has_valid_data = any(row[col] == row[col] and row[col] is not None for row in raw_rows)
+        if has_valid_data:
+            valid_cols.append(col)
+
+    # -------------------------------------------------------------------------
+    # PASSO 3: GERAR O TEXTO FINAL
+    # -------------------------------------------------------------------------
+    col_width = 22
+    current_time = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+
+    # Monta o cabeçalho baseando-se apenas nas colunas válidas
+    table_header = f"{'Tag':<10} | "
+    for col in valid_cols:
+        table_header += f"{col:<{col_width}} | "
+    table_header += "\n"
+
+    line_length = len(table_header) - 1
+    divider = "-" * line_length + "\n"
+
+    header = f"{divider} SIMULAÇÃO: {simulation_name} | DATA: {current_time}\n{divider}"
+    table_header = table_header + divider
+
+    lines = []
+    for row in raw_rows:
+        line_str = f"{row['tag']:<10} | "
+        for col in valid_cols:
+            val = row[col]
+            if val == val and val is not None:
+                # O Erro de Velocidade pede precisão de 6 casas decimais, o resto 2.
+                if col.startswith("Err V"):
+                    line_str += f"{val:<{col_width}.6f} | "
+                else:
+                    line_str += f"{val:<{col_width}.2f} | "
+            else:
+                line_str += f"{'NaN':<{col_width}} | "
         lines.append(line_str + "\n")
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)

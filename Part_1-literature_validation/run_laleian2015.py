@@ -6,14 +6,12 @@ from datetime import timedelta
 import numpy as np
 import pyvista as pv
 
-import cases.rectangular_duct_analytical_equations as analytical
+import Simulation_Cases.analytical_equations as analytical
 
 
 def read_db(
     db_path: str,
-) -> tuple[
-    list[int], float, float, str | None, str | None, float, int, list[float]
-]:
+) -> tuple[list[int], float, float, str | None, str | None, float, int, list[float]]:
     """Reads and parses the simulation database configuration file.
 
     Args:
@@ -118,9 +116,6 @@ def run_lbm(db_path: str) -> None:
     Returns:
         None. Displays terminal logs and generates .vti files.
     """
-    # =========================================================================
-    # 1. READ DATABASE AND SETUP
-    # =========================================================================
     (
         domain,
         resolution,
@@ -145,59 +140,45 @@ def run_lbm(db_path: str) -> None:
 
     nx, ny = domain
     raw_path = os.path.join(simulation_path, f"{simulation_name}.raw")
-
     depth_map = np.fromfile(raw_path, dtype=float).reshape(domain)
     solid_mask = depth_map == 0.0
-    safe_depth = np.where(
-        solid_mask[:, :, None], 1.0, depth_map[:, :, None] / resolution
-    )
+    safe_depth = np.where(solid_mask[:, :, None], 1.0, depth_map[:, :, None] / resolution)
     max_depth = np.max(depth_map / resolution)
-    print(
-        "Maximum Depth (h_max)"
-        f"= {max_depth} voxels"
-        f"= {max_depth * resolution} \u03bcm\n"
-    )
-
+    print(f"Maximum Depth (h_max)= {max_depth} voxels= {max_depth * resolution} \u03bcm\n")
     cs2 = 1.0 / 3.0
     nu = (tau - 0.5) * cs2
     drag_resistance = nu / (safe_depth**2 / 12.0)
 
-    # =========================================================================
-    # 2. LBM D2Q9 LATTICE INITIALIZATION
-    # =========================================================================
+    # convenção das velocidades
+    #
+    #         8   3   5       y
+    #          \  |  /        |
+    #           \ | /         |
+    #      2 ---  0  --- 1    L --- x
+    #           / | \
+    #          /  |  \
+    #         6   4   7
+
     e_x = np.array([0, 1, -1, 0, 0, 1, -1, 1, -1])
     e_y = np.array([0, 0, 0, 1, -1, 1, -1, -1, 1])
-    opposite_dir = np.array([0, 2, 1, 4, 3, 6, 5, 8, 7])
-    weights = np.array(
-        [4 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 36, 1 / 36, 1 / 36, 1 / 36]
-    )
-
     e_x_3d = e_x[None, None, :]
     e_y_3d = e_y[None, None, :]
+    opposite_dir = np.array([0, 2, 1, 4, 3, 6, 5, 8, 7])
+    weights = np.array([4 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 36, 1 / 36, 1 / 36, 1 / 36])
     weights_3d = weights[None, None, :]
-
     rho = np.ones((nx, ny, 1))
     f = weights_3d * rho
-
-    uh_x = np.zeros((nx, ny, 1))  # Momentum/lumped velocity (u_2D * h)
+    f_post = np.zeros_like(f)
+    uh_x = np.zeros((nx, ny, 1))
     uh_y = np.zeros((nx, ny, 1))
     force_x = np.zeros((nx, ny, 1))
     force_y = np.zeros((nx, ny, 1))
-    f_post = np.zeros_like(f)
 
-    # =========================================================================
-    # 3. BOUNCE-BACK BOUNDARY CONDITION
-    # =========================================================================
     bounce_back_mask = np.zeros((nx, ny, 9), dtype=bool)
     for k in range(9):
-        solid_neighbor = np.roll(
-            solid_mask, shift=(-e_x[k], -e_y[k]), axis=(0, 1)
-        )
+        solid_neighbor = np.roll(solid_mask, shift=(-e_x[k], -e_y[k]), axis=(0, 1))
         bounce_back_mask[:, :, k] = (~solid_mask) & solid_neighbor
 
-    # =========================================================================
-    # 4. MAIN LOOP
-    # =========================================================================
     error = 1e10
     previous_velocity_sum = 1e10
     timestep = 0
@@ -205,47 +186,25 @@ def run_lbm(db_path: str) -> None:
     while error > tolerance and timestep < timestepmax:
         # --- Macroscopic Variables ---
         rho = np.sum(f, axis=-1, keepdims=True)
-
         mom_x = np.dot(f, e_x)[:, :, None]
         mom_y = np.dot(f, e_y)[:, :, None]
-
-        uh_x = (mom_x + 0.5 * safe_depth * body_force[0]) / (
-            1.0 + 0.5 * drag_resistance
-        )
-        uh_y = (mom_y + 0.5 * safe_depth * body_force[1]) / (
-            1.0 + 0.5 * drag_resistance
-        )
-
+        uh_x = (mom_x + 0.5 * safe_depth * body_force[0]) / (1.0 + 0.5 * drag_resistance)
+        uh_y = (mom_y + 0.5 * safe_depth * body_force[1]) / (1.0 + 0.5 * drag_resistance)
         force_x = safe_depth * body_force[0] - (drag_resistance * uh_x)
         force_y = safe_depth * body_force[1] - (drag_resistance * uh_y)
-
         u_squared = uh_x**2 + uh_y**2
 
         # --- Collision and Forcing ---
         e_dot_u = e_x_3d * uh_x + e_y_3d * uh_y
-
-        f_eq = (
-            weights_3d
-            * rho
-            * (1.0 + 3.0 * e_dot_u + 4.5 * e_dot_u**2 - 1.5 * u_squared)
-        )
-
+        f_eq = weights_3d * rho * (1.0 + 3.0 * e_dot_u + 4.5 * e_dot_u**2 - 1.5 * u_squared)
         term_x = (e_x_3d - uh_x) * 3.0 + e_dot_u * 9.0 * e_x_3d
         term_y = (e_y_3d - uh_y) * 3.0 + e_dot_u * 9.0 * e_y_3d
-
-        forcing = (
-            weights_3d
-            * (1.0 - 0.5 / tau)
-            * (term_x * force_x + term_y * force_y)
-        )
-
+        forcing = weights_3d * (1.0 - 0.5 / tau) * (term_x * force_x + term_y * force_y)
         f_post = f - (1.0 / tau) * (f - f_eq) + forcing
 
         # --- Streaming / Propagation ---
         for k in range(9):
-            f[:, :, k] = np.roll(
-                f_post[:, :, k], shift=(e_x[k], e_y[k]), axis=(0, 1)
-            )
+            f[:, :, k] = np.roll(f_post[:, :, k], shift=(e_x[k], e_y[k]), axis=(0, 1))
 
         # --- Bounce-Back Boundary Condition ---
         for k in range(9):
@@ -256,53 +215,43 @@ def run_lbm(db_path: str) -> None:
         timestep += 1
         if timestep % 100 == 0:
             current_velocity_sum = np.sum(np.sqrt(u_squared))
-            error = (
-                np.abs(current_velocity_sum - previous_velocity_sum)
-                / current_velocity_sum
-            )
+            error = np.abs(current_velocity_sum - previous_velocity_sum) / current_velocity_sum
 
             previous_velocity_sum = current_velocity_sum
             print(f"Timestep {timestep}: error = {error:.1e}", end="\r")
 
-    # =========================================================================
-    # 5. POST-PROCESSING AND EXPORT
-    # =========================================================================
-
     u_x = np.where(solid_mask, 0.0, uh_x[:, :, 0] / max_depth)
     u_y = np.where(solid_mask, 0.0, uh_y[:, :, 0] / max_depth)
     rho_2d = rho[:, :, 0]
-
     um_to_md = 0.0009869233
     abs_perm = resolution**2 * np.mean(u_x) * nu / body_force[0]
+    print(f"\n\nAbsolute Permeability = {abs_perm:.4f} \u03bcm^2 = {abs_perm / um_to_md:.4f} mD")
 
-    print(
-        f"\n\nAbsolute Permeability = "
-        f"{abs_perm:.4f} \u03bcm^2 = "
-        f"{abs_perm / um_to_md:.4f} mD"
-    )
+    if simulation_name == "duct":
+        expected_3d = (
+            analytical.calculate_permeability_3d_rectangular_duct(width=domain[1] - 2, height=max_depth)
+            * resolution**2
+            * 100
+            / 102
+        )
+        print(f"\nExpected 3D Permeability = {expected_3d:.4f} \u03bcm^2 = {expected_3d / um_to_md:.4f} mD")
+        print(f"error 3D = {(abs_perm - expected_3d) / expected_3d * 100} %")
+        expected_2p5d = (
+            analytical.calculate_permeability_2p5d_rectangular_duct(width=domain[1] - 2, height=max_depth)
+            * resolution**2
+            * 100
+            / 102
+        )
+        print(f"\nExpected 2.5D Permeability = {expected_2p5d:.4f} \u03bcm^2 = {expected_2p5d / um_to_md:.4f} mD")
+        print(f"error 2.5D = {(abs_perm - expected_2p5d) / expected_2p5d * 100} %")
 
-    expected_3d = (
-        analytical.calculate_permeability_3d(
-            width=domain[1] - 2, height=max_depth
+    if simulation_name == "parallel_plates":
+        expected = (
+            analytical.calculate_permeability_parallel_plates(width=domain[1] - 2, height=max_depth) * resolution**2
         )
-        * resolution**2
-    )
-    print(
-        f"\n\nExpected 3D Permeability = "
-        f"{expected_3d:.4f} \u03bcm^2 = "
-        f"{expected_3d / um_to_md:.4f} mD"
-    )
-    expected_2p5d = (
-        analytical.calculate_permeability_2p5d(
-            width=domain[1] - 2, height=max_depth
-        )
-        * resolution**2
-    )
-    print(
-        f"\n\nExpected 2.5D Permeability = "
-        f"{expected_2p5d:.4f} \u03bcm^2 = "
-        f"{expected_2p5d / um_to_md:.4f} mD"
-    )
+        print(f"\nExpected Permeability = {expected:.4f} \u03bcm^2 = {expected / um_to_md:.4f} mD")
+        print(f"error = {(abs_perm - expected) / expected * 100} %")
+
     export_vti(
         ux=u_x,
         uy=u_y,
@@ -330,15 +279,10 @@ if __name__ == "__main__":
     run_lbm(db_path)
 
     end_time = time.time()
-
     duration_seconds = end_time - start_time
     duration = timedelta(seconds=duration_seconds)
-
     days = duration.days
     hours, remainder = divmod(duration.seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
 
-    print(
-        "\nTotal execution time:"
-        f"{days}d-{hours:02d}:{minutes:02d}:{seconds:02d}"
-    )
+    print(f"\nTotal execution time:{days}d-{hours:02d}:{minutes:02d}:{seconds:02d}")

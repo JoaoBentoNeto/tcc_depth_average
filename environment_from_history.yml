@@ -1,0 +1,21 @@
+name: depth_averaged
+channels:
+  - defaults
+dependencies:
+  - scikit-image
+  - pyevtk
+  - ipykernel
+  - matplotlib
+  - python
+  - scipy
+  - pypardiso
+  - porespy
+  - ipywidgets
+  - jupyterlab
+  - pyvista
+  - numpy
+  - trame
+  - scikit-fmm
+  - imageio
+  - imageio-ffmpeg
+prefix: /home/bento/miniconda3/envs/depth_averaged
