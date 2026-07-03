@@ -4,8 +4,8 @@ import time
 from datetime import timedelta
 
 import numpy as np
+import obtaining_methods as obtain
 import pyvista as pv
-import Simulation_Cases.analytical_equations as analytical
 
 
 def read_db(
@@ -46,6 +46,7 @@ def read_db(
 
     simulation_path = parsed_data.get("simulation_path", None)
     simulation_name = parsed_data.get("simulation_name", None)
+    model = parsed_data.get("model", None)
 
     resolution = float(parsed_data["voxel_length"])
     domain = [int(v.strip()) for v in parsed_data["N"].split(",")]
@@ -59,6 +60,7 @@ def read_db(
         tolerance,
         timestepmax,
         body_force,
+        model,
     )
 
 
@@ -124,6 +126,7 @@ def run_lbm(db_path: str) -> None:
         tolerance,
         timestepmax,
         body_force,
+        model,
     ) = read_db(db_path=db_path)
 
     print(
@@ -135,6 +138,7 @@ def run_lbm(db_path: str) -> None:
         f"Tolerance = {tolerance}\n"
         f"Timestep Max = {timestepmax}\n"
         f"Body Force = {body_force}\n"
+        f"Model = {model}\n"
     )
 
     nx, ny = domain
@@ -150,7 +154,22 @@ def run_lbm(db_path: str) -> None:
     )
     cs2 = 1.0 / 3.0
     nu = (tau - 0.5) * cs2
-    drag_resistance = nu / (safe_depth**2 / 12.0)
+
+    if model == "laleian2015" or np.count_nonzero(depth_map == 0) == 0:
+        drag_resistance = nu / (safe_depth**2 / 12.0)
+    elif model == "rdm":
+        semi_width_map = obtain.calculate_skeleton_map(depth_map=depth_map)
+        permeability_map = obtain.calculate_shear_permeability(
+            semi_width_map=semi_width_map,
+            depth_map=depth_map,
+            resolution=resolution,
+        )
+        del semi_width_map
+        permeability_map = np.where(depth_map == 0, 1, permeability_map)
+        drag_resistance = nu / permeability_map
+        del permeability_map
+    else:
+        raise ValueError(f"Unknown model: {model}")
 
     # discrete velocity convention
     #
@@ -226,62 +245,25 @@ def run_lbm(db_path: str) -> None:
 
         # --- Convergence Check ---
         timestep += 1
-        if timestep % 100 == 0:
+        if timestep % 1000 == 0:
             current_velocity_sum = np.sum(np.sqrt(u_squared))
             error = (
                 np.abs(current_velocity_sum - previous_velocity_sum)
                 / current_velocity_sum
             )
-
             previous_velocity_sum = current_velocity_sum
-            print(f"Timestep {timestep}: error = {error:.1e}", end="\r")
 
-    u_x = np.where(solid_mask, 0.0, uh_x[:, :, 0] / max_depth)
-    u_y = np.where(solid_mask, 0.0, uh_y[:, :, 0] / max_depth)
-    rho_2d = rho[:, :, 0]
-    um_to_md = 0.0009869233
-    abs_perm = resolution**2 * np.mean(u_x) * nu / body_force[0]
-    print(
-        f"\n\nAbsolute Permeability = {abs_perm:.4f} \u03bcm^2 = {abs_perm / um_to_md:.4f} mD"
-    )
+            u_x = np.where(solid_mask, 0.0, uh_x[:, :, 0] / max_depth)
+            u_y = np.where(solid_mask, 0.0, uh_y[:, :, 0] / max_depth)
+            rho_2d = rho[:, :, 0]
+            um_to_md = 0.0009869233
+            abs_perm = resolution**2 * np.mean(u_x) * nu / body_force[0]
 
-    if simulation_name == "duct":
-        expected_3d = (
-            analytical.calculate_permeability_3d_rectangular_duct(
-                width=domain[1] - 2, height=max_depth
+            print(
+                f"Timestep {timestep} - error = {error:.1e}: Absolute Permeability = "
+                f"{abs_perm:.4f} \u03bcm^2 = {abs_perm / um_to_md:.4f} mD",
+                end="\r",
             )
-            * resolution**2
-            * 100
-            / 102
-        )
-        print(
-            f"\nExpected 3D Permeability = {expected_3d:.4f} \u03bcm^2 = {expected_3d / um_to_md:.4f} mD"
-        )
-        print(f"error 3D = {(abs_perm - expected_3d) / expected_3d * 100} %")
-        expected_2p5d = (
-            analytical.calculate_permeability_2p5d_rectangular_duct(
-                width=domain[1] - 2, height=max_depth
-            )
-            * resolution**2
-            * 100
-            / 102
-        )
-        print(
-            f"\nExpected 2.5D Permeability = {expected_2p5d:.4f} \u03bcm^2 = {expected_2p5d / um_to_md:.4f} mD"
-        )
-        print(f"error 2.5D = {(abs_perm - expected_2p5d) / expected_2p5d * 100} %")
-
-    if simulation_name == "parallel_plates":
-        expected = (
-            analytical.calculate_permeability_parallel_plates(
-                width=domain[1] - 2, height=max_depth
-            )
-            * resolution**2
-        )
-        print(
-            f"\nExpected Permeability = {expected:.4f} \u03bcm^2 = {expected / um_to_md:.4f} mD"
-        )
-        print(f"error = {(abs_perm - expected) / expected * 100} %")
 
     export_vti(
         ux=u_x,

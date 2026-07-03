@@ -10,12 +10,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pyvista as pv
 
-import os
-import re
-from datetime import datetime
-
-import run_laleian2015
-
 
 def read_vti(
     simulation_path: str,
@@ -210,6 +204,62 @@ def calculate_permeability_errors(
     return permeability_error
 
 
+def read_db(
+    db_path: str,
+) -> tuple[list[int], float, float, str | None, str | None, float, int, list[float]]:
+    """Reads and parses the simulation database configuration file.
+
+    Args:
+        db_path: The absolute or relative path to the .db file.
+
+    Returns:
+        A tuple containing the extracted simulation parameters:
+        - domain: A list of integers representing the dimensions.
+        - resolution: The conversion factor in micrometers/voxel.
+        - tau: The relaxation time.
+        - simulation_path: The directory path (None if not found).
+        - simulation_name: The name of the simulation job (None if not found).
+        - tolerance: The convergence tolerance parameter.
+        - timestepmax: The maximum number of timesteps.
+        - body_force: A list of floats representing the acceleration field.
+    """
+    parsed_data = {}
+
+    with open(db_path, "r") as file:
+        for line in file:
+            line = line.strip()
+            if not line or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"')
+            parsed_data[key] = value
+
+    tau = float(parsed_data["tau"])
+    body_force = [float(v.strip()) for v in parsed_data["F"].split(",")]
+    timestepmax = int(parsed_data["timestepMax"])
+    tolerance = float(parsed_data["tolerance"])
+
+    simulation_path = parsed_data.get("simulation_path", None)
+    simulation_name = parsed_data.get("simulation_name", None)
+    simulation_type = parsed_data.get("simulation_type", None)
+
+    resolution = float(parsed_data["voxel_length"])
+    domain = [int(v.strip()) for v in parsed_data["N"].split(",")]
+
+    return (
+        domain,
+        resolution,
+        tau,
+        simulation_path,
+        simulation_name,
+        tolerance,
+        timestepmax,
+        body_force,
+        simulation_type,
+    )
+
+
 def extract_simulation_data(parent_folder_path: str) -> dict:
     """ExtractsLBM simulation results from a directory tree.
 
@@ -223,7 +273,7 @@ def extract_simulation_data(parent_folder_path: str) -> dict:
         A nested dictionary containing the results organized by
         simulation type and identifier.
     """
-    valid_cases = ["fullscale", "greyscale", "2d", "laleian2015"]
+    valid_cases = ["fullscale", "greyscale"]
     simulation_data = {case: {} for case in valid_cases}
 
     for case in valid_cases:
@@ -240,8 +290,21 @@ def extract_simulation_data(parent_folder_path: str) -> dict:
         for sim_folder in sim_folders:
             sim_path = os.path.join(case_path, sim_folder)
 
-            match = re.search(r"_([a-zA-Z]+_\d+(?:p\d+)?)$", sim_folder)
-            identifier = match.group(1) if match else sim_folder
+            if case == "fullscale":
+                target_key = "fullscale"
+                match = re.search(r"_((?:AR|h|dx)_[\d\.p]+)$", sim_folder)
+                identifier = match.group(1) if match else sim_folder
+            else:
+                match = re.match(r"^.*?_grey_(.*?)_((?:AR|h|dx)_[\d\.p]+)$", sim_folder)
+                if match:
+                    target_key = match.group(1)  # e.g., 'local_thickness'
+                    identifier = match.group(2)  # e.g., 'h_41p5'
+                else:
+                    print(
+                        f"Warning: Folder {sim_folder} does not match "
+                        "greyscale pattern. Skipping..."
+                    )
+                    continue
 
             db_path = os.path.join(sim_path, f"{sim_folder}.db")
             if not os.path.exists(db_path):
@@ -249,9 +312,7 @@ def extract_simulation_data(parent_folder_path: str) -> dict:
                 continue
 
             try:
-                (_, resolution, tau, _, _, _, _, body_force) = run_laleian2015.read_db(
-                    db_path
-                )
+                (_, resolution, tau, _, _, _, _, body_force, _) = read_db(db_path)
 
                 vz_map, _, _ = get_depth_averaged_map(sim_path)
             except Exception as e:
@@ -269,7 +330,10 @@ def extract_simulation_data(parent_folder_path: str) -> dict:
                 resolution=resolution,
             )
 
-            simulation_data[case][identifier] = {
+            if target_key not in simulation_data:
+                simulation_data[target_key] = {}
+
+            simulation_data[target_key][identifier] = {
                 "permeability": sim_permeability,
                 "velocity": flow_velocity,
             }
@@ -293,7 +357,6 @@ def compute_errors(
     Returns:
         A nested dictionary containing the computed errors for each simulation/analytical case.
     """
-
     ref_exp = (
         {k.lstrip("_"): v for k, v in experimental_data.items()}
         if experimental_data
@@ -350,6 +413,7 @@ def compute_errors(
                     test_permeability=test_perm,
                     ref_permeability=ref_perm,
                 )
+
             else:
                 perm_error = float("nan")
 
@@ -368,9 +432,6 @@ def compute_errors(
                 "normalized_rmse": rmse,
                 "mean_velocity_error": mean_vel_error,
             }
-            print(
-                f"{identifier}: permeability={test_perm}, perm_error={perm_error}, rmse={rmse}"
-            )
 
     print("\n")
     return results
@@ -380,6 +441,7 @@ def plot_permeability_errors(
     parent_folder_path: str,
     simulation_name: str,
     results: dict,
+    title: str,
     x_label: str,
     x_scale: Literal["linear", "log"] = "linear",
     expected_error: tuple[np.ndarray, np.ndarray] | None = None,
@@ -398,21 +460,31 @@ def plot_permeability_errors(
     Returns:
         None. Displays the matplotlib plot and saves it to disk.
     """
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(5, 5))
 
     styles = {
         "fullscale": {"color": "#ff7f0e", "marker": "D"},
-        "greyscale": {"color": "#1f77b4", "marker": "s"},
-        "2d": {"color": "#2ca02c", "marker": "^"},
-        "laleian2015": {"color": "#d62728", "marker": "o"},
+        "skeletonize": {"color": "#e377c2", "marker": "s"},
+        "medial_axis": {"color": "#2ca02c", "marker": "^"},
+        "local_thickness": {"color": "#d62728", "marker": "o"},
+        "n_edt": {"color": "#9467bd", "marker": "*"},
+        "perfect": {"color": "#8c564b", "marker": "v"},
+        "laleian2015": {"color": "#1f77b4", "marker": "X"},
     }
 
     legend_labels = {
+        # --- Baselines & Core References ---
         "fullscale": "Fullscale 3D",
-        "greyscale": "Greyscale (2.5D)",
-        "2d": "2D",
-        "laleian2015": "Laleian et al. (2015)",
+        "analytical_3d": "Analítico 3D",
         "analytical_2p5d": "Analítico 2.5D",
+        # --- The Greyscale (2.5D) Methods ---
+        "skeletonize": "Skeletonize (2.5D)",
+        "medial_axis": "Medial Axis (2.5D)",
+        "local_thickness": "Local Thickness (2.5D)",
+        "n_edt": "N-EDT (2.5D)",
+        # --- Other Specific Methods ---
+        "perfect": "Medição Manual (2.5D)",
+        "laleian2015": "Laleian et al. (2015)",
     }
 
     for case, runs in results.items():
@@ -448,7 +520,7 @@ def plot_permeability_errors(
             marker=style["marker"],
             s=60,
             edgecolors=style["color"],
-            linewidths=1.5,
+            linewidths=1.6,
             zorder=3,
         )
 
@@ -459,8 +531,7 @@ def plot_permeability_errors(
             y_exp,
             color="black",
             linestyle="--",
-            linewidth=1.5,
-            alpha=0.7,
+            linewidth=2.0,
             label="Erro esperado (2.5D vs 3D)",
             zorder=2,
         )
@@ -468,21 +539,43 @@ def plot_permeability_errors(
     ax.set_xscale(x_scale)
     ax.set_yscale("log")
 
-    ax.set_xlabel(x_label, fontsize=12, fontweight="bold")
-    ax.set_ylabel("Erro relativo da permeabilidade (%)", fontsize=12, fontweight="bold")
+    ax.set_xlabel(x_label, fontsize=10, fontweight="bold")
+    ax.set_ylabel("Erro relativo da permeabilidade (%)", fontsize=10, fontweight="bold")
 
     ax.grid(True, which="major", linestyle="-", alpha=0.5)
     ax.grid(True, which="minor", linestyle=":", alpha=0.2)
 
-    ax.legend(fontsize=10, framealpha=1.0, edgecolor="black")
+    # --- Configuração da Legenda Externa ---
+    ax.legend(
+        fontsize=8,  # Fonte levemente reduzida para acomodar nomes longos
+        framealpha=1.0,
+        edgecolor="black",
+        loc="upper center",  # Ponto de referência da legenda
+        bbox_to_anchor=(
+            0.0,
+            -0.3,
+            1.0,
+            0.1,
+        ),  # (x, y, largura, altura) ancorado no eixo
+        mode="expand",  # Força a legenda a preencher exatamente a largura de 1.0
+        ncol=2,  # Divide em 2 colunas para economizar espaço vertical
+        borderaxespad=0.0,
+    )
 
-    plt.tight_layout()
+    plt.title(title)
+
+    # Substituímos o tight_layout() puro por um que considera o espaço extra da legenda
+    # Isso evita que o título ou os labels se sobreponham
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
 
     os.makedirs(parent_folder_path, exist_ok=True)
     save_path = os.path.join(
         parent_folder_path, f"{simulation_name}_permeability_error.png"
     )
-    plt.savefig(save_path, dpi=600, bbox_inches="tight", pad_inches=0.1)
+
+    # bbox_inches="tight" é a chave mágica final que garante que o PDF salvo
+    # não corte a legenda que foi jogada para fora
+    plt.savefig(save_path, dpi=1200, bbox_inches="tight", pad_inches=0.1)
     plt.close()
 
 
@@ -496,12 +589,22 @@ def export_comparative_results_txt(
     """Exports a wide-format comparative text report of the simulations.
 
     Creates an aligned, fixed-width text table comparing permeabilities (in mD)
-    and errors across all theoretical references and LBM models. Completely
-    omits any columns that contain only NaN values.
+    and errors across all theoretical references and LBM models.
     """
     um_to_md = 0.0009869233
-    cases = ["fullscale", "greyscale", "2d", "laleian2015"]
 
+    # Letra minúscula no '2d' para bater perfeitamente com a chave do dicionário
+    cases = [
+        "fullscale",
+        "skeletonize",
+        "medial_axis",
+        "n_edt",
+        "local_thickness",
+        "perfect",
+        "laleian2015",
+    ]
+
+    # 1. Normalizar todos os dicionários (remover o '_' do começo) para evitar duplicatas
     clean_results = {}
     for case, runs in results.items():
         clean_results[case] = {k.lstrip("_"): v for k, v in runs.items()}
@@ -522,6 +625,7 @@ def export_comparative_results_txt(
         else {}
     )
 
+    # 2. Coletar identificadores únicos perfeitamente unificados
     identifiers = set()
     for runs in clean_results.values():
         identifiers.update(runs.keys())
@@ -535,82 +639,30 @@ def export_comparative_results_txt(
 
     sorted_identifiers = sorted(list(identifiers), key=get_numeric_ar)
 
-    raw_rows = []
-    for ident in sorted_identifiers:
-        match = re.search(r"(\d+(?:p\d+)?)", ident)
-        tag = match.group(1) if match else ident
-
-        exp_k = clean_exp.get(ident, float("nan"))
-        ana3d_k = clean_ana_3d.get(ident, {}).get("permeability", float("nan"))
-        ana25d_k = clean_ana_2p5d.get(ident, {}).get("permeability", float("nan"))
-
-        row_data = {
-            "tag": tag,
-            "Exp [mD]": exp_k / um_to_md
-            if exp_k == exp_k and exp_k is not None
-            else float("nan"),
-            "Ana 3D [mD]": ana3d_k / um_to_md
-            if ana3d_k == ana3d_k and ana3d_k is not None
-            else float("nan"),
-            "Ana 2.5D [mD]": ana25d_k / um_to_md
-            if ana25d_k == ana25d_k and ana25d_k is not None
-            else float("nan"),
-        }
-
-        for case in cases:
-            perm = (
-                clean_results.get(case, {})
-                .get(ident, {})
-                .get("permeability", float("nan"))
-            )
-            row_data[f"{case.capitalize()} [mD]"] = (
-                perm / um_to_md if perm == perm and perm is not None else float("nan")
-            )
-
-            err_k = (
-                clean_results.get(case, {})
-                .get(ident, {})
-                .get("permeability_error", float("nan"))
-            )
-            row_data[f"Err K {case.capitalize()} [%]"] = (
-                err_k if err_k == err_k and err_k is not None else float("nan")
-            )
-
-            err_v = (
-                clean_results.get(case, {})
-                .get(ident, {})
-                .get("normalized_rmse", float("nan"))
-            )
-            row_data[f"Err V {case.capitalize()}"] = (
-                err_v if err_v == err_v and err_v is not None else float("nan")
-            )
-
-        raw_rows.append(row_data)
-
-    all_col_keys = ["Exp [mD]", "Ana 3D [mD]", "Ana 2.5D [mD]"]
-    for case in cases:
-        all_col_keys.append(f"{case.capitalize()} [mD]")
-    for case in cases:
-        all_col_keys.append(f"Err K {case.capitalize()} [%]")
-    for case in cases:
-        all_col_keys.append(f"Err V {case.capitalize()}")
-
-    valid_cols = []
-    for col in all_col_keys:
-        has_valid_data = any(
-            row[col] == row[col] and row[col] is not None for row in raw_rows
-        )
-        if has_valid_data:
-            valid_cols.append(col)
-
-    col_width = 22
     current_time = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
+    # 3. Formatação rígida
+    # Aumentado para 22 para acomodar cabeçalhos longos como "Err K Laleian2015 [%]" sem vazar
+    col_width = 22
+
+    # Construção do cabeçalho alinhado com a mesma regra das variáveis de dados
     table_header = f"{'Tag':<10} | "
-    for col in valid_cols:
-        table_header += f"{col:<{col_width}} | "
+    table_header += f"{'Exp [mD]':<{col_width}} | "
+    table_header += f"{'Ana 3D [mD]':<{col_width}} | "
+    table_header += f"{'Ana 2.5D [mD]':<{col_width}} | "
+
+    for case in cases:
+        table_header += f"{f'{case.capitalize()} [mD]':<{col_width}} | "
+
+    for case in cases:
+        table_header += f"{f'Err K {case.capitalize()} [%]':<{col_width}} | "
+
+    for case in cases:
+        table_header += f"{f'Err V {case.capitalize()}':<{col_width}} | "
+
     table_header += "\n"
 
+    # Calcular o tamanho real que a tabela vai ter para fazer o divisor perfeitamente
     line_length = len(table_header) - 1
     divider = "-" * line_length + "\n"
 
@@ -618,17 +670,60 @@ def export_comparative_results_txt(
     table_header = table_header + divider
 
     lines = []
-    for row in raw_rows:
-        line_str = f"{row['tag']:<10} | "
-        for col in valid_cols:
-            val = row[col]
-            if val == val and val is not None:
-                if col.startswith("Err V"):
-                    line_str += f"{val:<{col_width}.6f} | "
-                else:
-                    line_str += f"{val:<{col_width}.2f} | "
+    for ident in sorted_identifiers:
+        match = re.search(r"(\d+(?:p\d+)?)", ident)
+        tag = match.group(1) if match else ident
+
+        line_str = f"{tag:<10} | "
+
+        exp_k = clean_exp.get(ident, float("nan"))
+        ana3d_k = clean_ana_3d.get(ident, {}).get("permeability", float("nan"))
+        ana25d_k = clean_ana_2p5d.get(ident, {}).get("permeability", float("nan"))
+
+        refs = [exp_k, ana3d_k, ana25d_k]
+        for val in refs:
+            if (
+                val == val and val is not None
+            ):  # Forma robusta de checar se não é NaN nem None
+                val_md = val / um_to_md
+                line_str += f"{val_md:<{col_width}.2f} | "
             else:
                 line_str += f"{'NaN':<{col_width}} | "
+
+        for case in cases:
+            perm = (
+                clean_results.get(case, {})
+                .get(ident, {})
+                .get("permeability", float("nan"))
+            )
+            if perm == perm and perm is not None:
+                perm_md = perm / um_to_md
+                line_str += f"{perm_md:<{col_width}.2f} | "
+            else:
+                line_str += f"{'NaN':<{col_width}} | "
+
+        for case in cases:
+            err_k = (
+                clean_results.get(case, {})
+                .get(ident, {})
+                .get("permeability_error", float("nan"))
+            )
+            if err_k == err_k and err_k is not None:
+                line_str += f"{err_k:<{col_width}.2f} | "
+            else:
+                line_str += f"{'NaN':<{col_width}} | "
+
+        for case in cases:
+            err_v = (
+                clean_results.get(case, {})
+                .get(ident, {})
+                .get("normalized_rmse", float("nan"))
+            )
+            if err_v == err_v and err_v is not None:
+                line_str += f"{err_v:<{col_width}.6f} | "
+            else:
+                line_str += f"{'NaN':<{col_width}} | "
+
         lines.append(line_str + "\n")
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)

@@ -4,14 +4,18 @@ import textwrap
 from datetime import datetime
 from typing import Literal
 
+import matplotlib.pyplot as plt
 import numpy as np
+import obtaining_methods as obtain
 
 
 def create_simulation_directory(
     simulation_name: str,
     remote_parent_path: str,
     local_parent_path: str,
-    simulation_type: Literal["full", "2D", "grey", "laleian2015"],
+    simulation_type: Literal[
+        "full", "2d", "lbpm_laleian2015", "lbpm_rdm", "laleian2015", "rdm"
+    ],
 ) -> tuple[str, str]:
     """Creates a local directory and generates local and remote paths.
 
@@ -20,7 +24,7 @@ def create_simulation_directory(
         remote_parent_path: The parent path on the Linux cluster.
         local_parent_path: The local parent directory.
         simulation_type: Defines the routine and environment to be used.
-            Must be exactly "full", "grey", or "laleian2015".
+            Must be exactly "full", "lbpm_laleian2015", "lbpm_rdm", "laleian2015" or "rdm".
 
     Returns:
         A tuple containing two strings:
@@ -30,15 +34,25 @@ def create_simulation_directory(
     if simulation_type == "full":
         local_path = os.path.join(local_parent_path, "fullscale", simulation_name)
         remote_path = posixpath.join(remote_parent_path, "fullscale", simulation_name)
-    if simulation_type == "2D":
+    if simulation_type == "2d":
         local_path = os.path.join(local_parent_path, "2d", simulation_name)
         remote_path = posixpath.join(remote_parent_path, "2d", simulation_name)
-    if simulation_type == "grey":
-        local_path = os.path.join(local_parent_path, "greyscale", simulation_name)
-        remote_path = posixpath.join(remote_parent_path, "greyscale", simulation_name)
+    if simulation_type == "lbpm_laleian2015":
+        local_path = os.path.join(
+            local_parent_path, "lbpm_laleian2015", simulation_name
+        )
+        remote_path = posixpath.join(
+            remote_parent_path, "lbpm_laleian2015", simulation_name
+        )
+    if simulation_type == "lbpm_rdm":
+        local_path = os.path.join(local_parent_path, "lbpm_rdm", simulation_name)
+        remote_path = posixpath.join(remote_parent_path, "lbpm_rdm", simulation_name)
     if simulation_type == "laleian2015":
         local_path = os.path.join(local_parent_path, "laleian2015", simulation_name)
         remote_path = posixpath.join(remote_parent_path, "laleian2015", simulation_name)
+    if simulation_type == "rdm":
+        local_path = os.path.join(local_parent_path, "rdm", simulation_name)
+        remote_path = posixpath.join(remote_parent_path, "rdm", simulation_name)
 
     os.makedirs(local_path, exist_ok=True)
 
@@ -111,7 +125,9 @@ def create_slurm_script(
     simulation_name: str,
     domain: tuple[int, int, int],
     hardware_type: Literal["k40m", "a100", "cpu"],
-    simulation_type: Literal["full", "2D", "grey", "laleian2015"],
+    simulation_type: Literal[
+        "full", "2d", "lbpm_laleian2015", "lbpm_rdm", "laleian2015", "rdm"
+    ],
     only_one_domain: bool = False,
 ) -> None:
     """Generates a SLURM batch script.
@@ -123,7 +139,7 @@ def create_slurm_script(
         hardware_type: The identifier for the hardware architecture.
             Must be exactly "k40m", "a100" or "cpu".
         simulation_type: Defines the routine and environment to be used.
-            Must be exactly "full","2D","grey", or "laleian2015".
+            Must be exactly "full","2d","lbpm_laleian2015","lbpm_rdm", "laleian2015","rdm".
         only_one_domain: If True, restricts the subdomains division to a single
             domain.
 
@@ -141,7 +157,7 @@ def create_slurm_script(
         #SBATCH --time=00:00:00
         """)
 
-    if simulation_type == "laleian2015":
+    if simulation_type == "laleian2015" or simulation_type == "rdm":
         body = textwrap.dedent(f"""\
             #SBATCH --partition=close_cpu
             #SBATCH --ntasks=1
@@ -149,7 +165,7 @@ def create_slurm_script(
 
             module load conda
             conda activate depth_averaged
-            python -u /home/joao.neto/TCC/Part_1-literature_validation/run_laleian2015.py ./{simulation_name}.db
+            python -u /home/joao.neto/TCC/Part_3-rectangular_duct_model_implementation/run_depth_average.py ./{simulation_name}.db
             """)
     else:
         n_procs, _ = divide_domain(
@@ -159,11 +175,11 @@ def create_slurm_script(
         )
         total_processors = int(n_procs[0] * n_procs[1] * n_procs[2])
 
-        if simulation_type in ("full", "2D"):
+        if simulation_type in ("full", "2d"):
             routine = "lbpm_permeability_simulator"
             module = "lbpm/cpu/dev" if hardware_type == "cpu" else "lbpm/gpu"
 
-        elif simulation_type == "grey":
+        elif simulation_type == "lbpm_laleian2015" or simulation_type == "lbpm_rdm":
             routine = "lbpm_greyscale_simulator"
             module = "lbpm/cpu" if hardware_type == "cpu" else "lbpm/gpu"
             module = module + "/poro_grey_fix_2edb227"
@@ -179,12 +195,14 @@ def create_slurm_script(
                 """)
         else:
             hardware_directives = textwrap.dedent(f"""\
-                #SBATCH --partition=all_gpu
+                #SBATCH --partition=all_gpu                               
                 #SBATCH --ntasks={total_processors}
                 #SBATCH --gres=gpu:{hardware_type}:{total_processors}
                 #SBATCH --cpus-per-task=1
                 """)
-        if hardware_type == "cpu" and simulation_type == "grey":
+        if hardware_type == "cpu" and (
+            simulation_type == "lbpm_laleian2015" or simulation_type == "lbpm_rdm"
+        ):
             hardware_directives = hardware_directives + textwrap.dedent("""\
 
                 module use "$HOME/modulefiles"
@@ -344,7 +362,7 @@ def fullscale_db(
         file.write(content)
 
 
-def laleian2015_db(
+def depth_averaged_db(
     local_path: str,
     remote_path: str,
     simulation_name: str,
@@ -354,6 +372,7 @@ def laleian2015_db(
     body_force: float,
     timestepmax: int,
     tolerance: float,
+    model: Literal["laleian2015", "rdm"],
     on_cluster: bool = True,
 ) -> None:
     """Generates the database script for custom depth-averaged LBM simulations.
@@ -364,7 +383,7 @@ def laleian2015_db(
         remote_path: Directory path for archives when using the cluster.
             Must be written in Linux format.
         simulation_name: Name of the simulation.
-        domain: A tuple containing the 2D volume dimensions (nx, ny).
+        domain: A tuple containing the 2d volume dimensions (nx, ny).
         resolution: A number indicating the conversion in micrometers/voxel.
         tau: Relaxation time used in LBM simulations.
         body_force: Acceleration field that stimulates the fluid flow.
@@ -378,7 +397,7 @@ def laleian2015_db(
     simulation_path = remote_path if on_cluster else local_path
 
     content = textwrap.dedent(f"""\
-        LBM Depth-averaged Laleian 2015 {{
+        LBM Depth-averaged {{
             tau = {tau}
             F = {body_force}, 0.0
             timestepMax = {timestepmax}
@@ -387,6 +406,7 @@ def laleian2015_db(
             simulation_name = "{simulation_name}"
             voxel_length = {resolution}
             N = {domain[0]}, {domain[1]}
+            model = {model}
         }}""")
 
     with open(os.path.join(local_path, f"{simulation_name}.db"), "w") as file:
@@ -397,8 +417,8 @@ def write_sbatch_header(local_parent_path: str) -> None:
     """Writes a timestamped header to organize all sbatch master files.
 
     Creates the parent directory if it does not exist, then appends a
-    timestamped visual separator to the master files for fullscale, 2D,
-    greyscale, and laleian2015 simulations.
+    timestamped visual separator to the master files for fullscale, 2d,
+    lbpm_laleian2015, lbpm_rdm, rdm and laleian2015 simulations.
 
     Args:
         local_parent_path: The local directory where the .txt files are saved.
@@ -410,13 +430,23 @@ def write_sbatch_header(local_parent_path: str) -> None:
 
     mapping = {
         "full": "sbatches_fullscale.txt",
-        "grey": "sbatches_greyscale.txt",
+        "lbpm_laleian2015": "sbatches_lbpm_laleian2015.txt",
+        "lbpm_rdm": "sbatches_lbpm_rdm.txt",
         "laleian2015": "sbatches_laleian2015.txt",
+        "rdm": "sbatches_rdm.txt",
         "2d": "sbatches_2d.txt",
         "all": "sbatches_all.txt",
     }
 
-    for simulation_type in ["full", "2d", "grey", "laleian2015", "all"]:
+    for simulation_type in [
+        "full",
+        "2d",
+        "lbpm_laleian2015",
+        "lbpm_rdm",
+        "rdm",
+        "laleian2015",
+        "all",
+    ]:
         filename = mapping.get(simulation_type)
         txt_path = os.path.join(local_parent_path, filename)
 
@@ -439,7 +469,9 @@ def append_sbatch_command(
     local_parent_path: str,
     remote_simulation_path: str,
     simulation_name: str,
-    simulation_type: Literal["full", "2D", "grey", "laleian2015"],
+    simulation_type: Literal[
+        "full", "2d", "lbpm_laleian2015", "lbpm_rdm", "laleian2015", "rdm"
+    ],
 ) -> None:
     """Appends the submission command to a type-specific sbatches text file.
 
@@ -448,7 +480,7 @@ def append_sbatch_command(
         remote_simulation_path: The path of the simulation on the cluster.
         simulation_name: The name of the simulation job.
         simulation_type: Defines the target master file. Must be exactly
-            "full", "2D", "grey", or "laleian2015".
+            "full", "2d", "lbpm_laleian","lbpm_rdm", "laleian2015", "rdm".
 
     Raises:
         ValueError: If an invalid simulation_type is provided.
@@ -458,12 +490,16 @@ def append_sbatch_command(
     """
     if simulation_type == "full":
         txt_filename = "sbatches_fullscale.txt"
-    elif simulation_type == "grey":
-        txt_filename = "sbatches_greyscale.txt"
+    elif simulation_type == "lbpm_laleian2015":
+        txt_filename = "sbatches_lbpm_laleian2015.txt"
+    elif simulation_type == "lbpm_rdm":
+        txt_filename = "sbatches_lbpm_rdm.txt"
     elif simulation_type == "laleian2015":
         txt_filename = "sbatches_laleian2015.txt"
-    elif simulation_type == "2D":
+    elif simulation_type == "2d":
         txt_filename = "sbatches_2d.txt"
+    elif simulation_type == "rdm":
+        txt_filename = "sbatches_rdm.txt"
     else:
         raise ValueError(f"Invalid simulation_type: {simulation_type}")
 
@@ -485,6 +521,7 @@ def greyscale_workspace(
     local_path: str,
     remote_path: str,
     simulation_name: str,
+    model: Literal["rdm", "laleian2015"],
     resolution: float,
     hardware_type: Literal["k40m", "a100", "cpu"],
     timestepmax: int,
@@ -496,7 +533,7 @@ def greyscale_workspace(
     Args:
         tau: Relaxation time used in LBM simulations.
         body_force: Acceleration field that stimulates the fluid flow.
-        depth_map: A 2D NumPy array representing the depth distribution.
+        depth_map: A 2d NumPy array representing the depth distribution.
         local_path: The local parent directory to store the workspace.
         remote_path: The parent directory on the Linux cluster.
         simulation_name: Name of the simulation.
@@ -514,29 +551,11 @@ def greyscale_workspace(
         simulation_name=simulation_name,
         remote_parent_path=remote_path,
         local_parent_path=local_path,
-        simulation_type="grey",
+        simulation_type="lbpm_" + model,
     )
 
     depth_map = depth_map[:, np.newaxis, :].astype(np.float64)
     domain = depth_map.shape
-
-    max_depth = np.max(depth_map)
-
-    porosity_map = depth_map / max_depth
-    porosity_map = np.where(porosity_map == 1, 0.99999, porosity_map)
-    porosity_map.astype(np.float64).tofile(
-        os.path.join(local_sim_path, f"porosity_map_{simulation_name}.raw")
-    )
-
-    permeability_map = porosity_map * depth_map**2 / 12.0
-    permeability_map.astype(np.float64).tofile(
-        os.path.join(local_sim_path, f"permeability_map_{simulation_name}.raw")
-    )
-
-    depth_map = np.where(depth_map == 0, 0, 1)
-    depth_map.astype(np.uint8).tofile(
-        os.path.join(local_sim_path, f"{simulation_name}.raw")
-    )
 
     common_db(
         output_path=local_sim_path,
@@ -562,7 +581,7 @@ def greyscale_workspace(
         simulation_name=simulation_name,
         domain=domain,
         hardware_type=hardware_type,
-        simulation_type="grey",
+        simulation_type="lbpm_" + model,
         only_one_domain=only_one_domain,
     )
 
@@ -570,7 +589,73 @@ def greyscale_workspace(
         local_parent_path=local_path,
         remote_simulation_path=remote_sim_path,
         simulation_name=simulation_name,
-        simulation_type="grey",
+        simulation_type="lbpm_" + model,
+    )
+
+    max_depth = np.max(depth_map)
+
+    porosity_map = np.divide(depth_map, max_depth, dtype=np.float64)
+    porosity_map[porosity_map == 1.0] = 0.99999
+
+    porosity_map.tofile(
+        os.path.join(local_sim_path, f"porosity_map_{simulation_name}.raw")
+    )
+
+    if model == "laleian2015" or np.count_nonzero(depth_map == 0) == 0:
+        permeability_map = np.multiply(
+            porosity_map, depth_map**2 / 12.0, dtype=np.float64
+        )
+
+    elif model == "rdm":
+        depth_slice = depth_map[:, 0, :]
+
+        plt.imshow(depth_slice.T)
+        plt.axis("on")
+        plt.savefig(
+            os.path.join(local_sim_path, f"{simulation_name}_depth_map.png"),
+            dpi=600,
+            bbox_inches="tight",
+            pad_inches=0.1,
+        )
+        plt.close()
+
+        semi_width_map = obtain.calculate_skeleton_map(depth_map=depth_slice)
+
+        plt.imshow(semi_width_map.T)
+        plt.axis("on")
+        plt.colorbar()
+        plt.savefig(
+            os.path.join(local_sim_path, f"{simulation_name}_semi_width_map.png"),
+            dpi=600,
+            bbox_inches="tight",
+            pad_inches=0.1,
+        )
+        plt.close()
+
+        permeability_map = obtain.calculate_shear_permeability(
+            semi_width_map=semi_width_map[:, np.newaxis, :],
+            depth_map=depth_map,
+            resolution=resolution,
+        )
+        del semi_width_map
+
+        permeability_map = np.multiply(
+            porosity_map, permeability_map, out=permeability_map, dtype=np.float64
+        )
+    else:
+        raise ValueError(f"Unknown model: {model}")
+
+    permeability_map = np.where(depth_map == 0, 1, permeability_map)
+
+    permeability_map.tofile(
+        os.path.join(local_sim_path, f"permeability_map_{simulation_name}.raw")
+    )
+
+    del porosity_map
+    del permeability_map
+
+    (depth_map != 0).astype(np.uint8).tofile(
+        os.path.join(local_sim_path, f"{simulation_name}.raw")
     )
 
 
@@ -593,7 +678,7 @@ def fullscale_workspace(
     Args:
         tau: Relaxation time used in LBM simulations.
         body_force: Acceleration field that stimulates the fluid flow.
-        depth_map: A 2D NumPy array representing the dpeth distribution.
+        depth_map: A 2d NumPy array representing the dpeth distribution.
         local_path: The local parent directory to store the workspace.
         remote_path: The parent directory on the Linux cluster.
         simulation_name: Name of the simulation.
@@ -668,7 +753,7 @@ def fullscale_workspace(
     )
 
 
-def laleian2015_workspace(
+def depth_averaged_workspace(
     tau: float,
     body_force: float,
     depth_map: np.ndarray,
@@ -678,13 +763,14 @@ def laleian2015_workspace(
     resolution: float,
     timestepmax: int,
     tolerance: float,
+    model: Literal["rdm", "laleian2015"],
 ) -> None:
     """Orchestrates the workspace creation for Python LBM simulation.
 
     Args:
         tau: Relaxation time used in LBM simulations.
         body_force: Acceleration field that stimulates the fluid flow.
-        depth_map: A 2D NumPy array representing the depth distribution.
+        depth_map: A 2d NumPy array representing the depth distribution.
         local_path: The local parent directory to store the workspace.
         remote_path: The parent directory on the Linux cluster.
         simulation_name: Name of the simulation.
@@ -699,7 +785,7 @@ def laleian2015_workspace(
         simulation_name=simulation_name,
         remote_parent_path=remote_path,
         local_parent_path=local_path,
-        simulation_type="laleian2015",
+        simulation_type=model,
     )
 
     depth_map = np.round(depth_map / resolution) * resolution
@@ -709,7 +795,7 @@ def laleian2015_workspace(
     raw_file_path = os.path.join(local_sim_path, f"{simulation_name}.raw")
     depth_map.astype(float).tofile(raw_file_path)
 
-    laleian2015_db(
+    depth_averaged_db(
         local_path=local_sim_path,
         remote_path=remote_sim_path,
         simulation_name=simulation_name,
@@ -719,6 +805,7 @@ def laleian2015_workspace(
         body_force=body_force,
         timestepmax=timestepmax,
         tolerance=tolerance,
+        model=model,
         on_cluster=True,
     )
 
@@ -727,7 +814,7 @@ def laleian2015_workspace(
         simulation_name=simulation_name,
         domain=domain,
         hardware_type="cpu",
-        simulation_type="laleian2015",
+        simulation_type=model,
         only_one_domain=True,
     )
 
@@ -735,7 +822,7 @@ def laleian2015_workspace(
         local_parent_path=local_path,
         remote_simulation_path=remote_sim_path,
         simulation_name=simulation_name,
-        simulation_type="laleian2015",
+        simulation_type=model,
     )
 
 
@@ -752,13 +839,13 @@ def bidimensional_workspace(
     tolerance: float,
     only_one_domain: bool = False,
 ) -> None:
-    """Orchestrates the workspace creation for 2D LBPM permeability
+    """Orchestrates the workspace creation for 2d LBPM permeability
         simulations.
 
     Args:
         tau: Relaxation time used in LBM simulations.
         body_force: Acceleration field that stimulates the fluid flow.
-        depth_map: A 2D NumPy array representing the dpeth distribution.
+        depth_map: A 2d NumPy array representing the dpeth distribution.
         local_path: The local parent directory to store the workspace.
         remote_path: The parent directory on the Linux cluster.
         simulation_name: Name of the simulation.
@@ -776,7 +863,7 @@ def bidimensional_workspace(
         simulation_name=simulation_name,
         remote_parent_path=remote_path,
         local_parent_path=local_path,
-        simulation_type="2D",
+        simulation_type="2d",
     )
 
     bidimensional_image = np.where(depth_map != 0, 1, 0).astype(int)
@@ -812,7 +899,7 @@ def bidimensional_workspace(
         simulation_name=simulation_name,
         domain=domain,
         hardware_type=hardware_type,
-        simulation_type="2D",
+        simulation_type="2d",
         only_one_domain=only_one_domain,
     )
 
@@ -820,7 +907,7 @@ def bidimensional_workspace(
         local_parent_path=local_path,
         remote_simulation_path=remote_sim_path,
         simulation_name=simulation_name,
-        simulation_type="2D",
+        simulation_type="2d",
     )
 
 

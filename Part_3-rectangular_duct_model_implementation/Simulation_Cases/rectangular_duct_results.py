@@ -69,12 +69,16 @@ def generate_aspect_ratios(
 if __name__ == "__main__":
     simulation_name = "duct"
 
-    # win local: r"Z:\TCC\Part_1-literature_validation"
+    # win local: r"Z:\TCC\Part_3-rectangular_duct_model_implementation"
     # linux local: "/home/bento/remote/hal"
     local_path = os.path.join(
-        "/home/bento/remote/hal", "TCC", "Part_1-literature_validation", simulation_name
+        "/home/bento/remote/hal",
+        "TCC",
+        "Part_3-rectangular_duct_model_implementation",
+        simulation_name,
     )
-    remote_path = f"/home/joao.neto/TCC/Part_1-literature_validation/{simulation_name}"
+    remote_path = f"/home/joao.neto/TCC/Part_3-rectangular_duct_model_implementation/{simulation_name}"
+    local_path = remote_path
 
     depth = 100
     lattice_length = 4
@@ -84,7 +88,6 @@ if __name__ == "__main__":
     body_force = 1e-8
 
     aspect_ratios = [
-        0.01,
         0.1,
         0.2,
         0.5,
@@ -157,10 +160,10 @@ if __name__ == "__main__":
             "velocity": u_3d,
         }
 
-        analytical_data["2p5d"][identifier] = {
-            "permeability": k_2p5d,
-            "velocity": u_2p5d,
-        }
+        # analytical_data["2p5d"][identifier] = {
+        #     "permeability": k_2p5d,
+        #     "velocity": u_2p5d,
+        # }
 
     errors_data = analysis.compute_errors(
         simulation_data=simulation_data,
@@ -218,6 +221,7 @@ if __name__ == "__main__":
         parent_folder_path=local_path,
         simulation_name=simulation_name,
         results=errors_data,
+        title="Duto Retangular",
         x_label="Razão de Aspecto (AR = h/b)",
         x_scale="log",
         expected_error=(expected_x, expected_y),
